@@ -1,0 +1,61 @@
+# david2exchange – Beispielkonfiguration
+# Liegt idealerweise neben david2exchange.exe. Relative Pfade gelten ab Config-Ordner.
+
+david:
+  server: david.example.local
+  archiveRoot: \\david.example.local\david\archive
+  progId: DVOBJAPILib.DvISEAPI
+  timezone: Europe/Berlin
+  logon: AUTH
+
+m365:
+  tenantId: ""                     # setup trägt ein
+  clientId: ""                     # setup trägt ein
+  certThumbprint: ""               # setup trägt ein (CurrentUser\My)
+  ewsUrl: https://outlook.office365.com/EWS/Exchange.asmx
+  provenanceDomain: david.example.local
+  ewsFolder: David-Migration
+  migrationAdminUpn: ""            # Vollzugriff auf neu angelegte Postfächer
+
+staging:
+  root: .\data
+  manifest: .\data\manifest.db
+  logs: .\logs
+
+limits:
+  limit: 10                        # Testlauf; 0 = alle
+  retries: 3
+
+mailboxes:
+  - id: user01
+    enabled: true
+    wave: wave-1                   # Migrationsblock/Gruppe
+    source:
+      kind: user
+      archivePath: "user\\1000C000"
+      email: user01@example.com    # sicherer Match-Schlüssel
+    target:
+      upn: user01@example.com
+      type: user                   # user | shared
+      displayName: User 01
+      alias: user01
+      aliases: []
+      createIfMissing: false
+    include: [mail]
+    excludeArchives: []
+
+  - id: unverteilt
+    enabled: true
+    wave: wave-1
+    source:
+      kind: common
+      archivePath: "common\\unverteilt"
+    target:
+      upn: david-unverteilt@example.com
+      type: shared
+      displayName: David Unverteilt
+      alias: david-unverteilt
+      aliases: []
+      createIfMissing: true
+    include: [mail]
+    excludeArchives: ["ADDRESS", "#001#Adressen"]
