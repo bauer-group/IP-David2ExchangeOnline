@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 using System.Security.Cryptography.X509Certificates;
+using System.Text;
+using System.Text.RegularExpressions;
 using Microsoft.Exchange.WebServices.Data;
 using Microsoft.Identity.Client;
 using Task = System.Threading.Tasks.Task;
@@ -31,6 +33,7 @@ public sealed class EwsOutputTarget : IOutputTarget
     private ExchangeService? _service;
     private Folder? _folder;
     private int _written;
+    private int _alreadyPresent;
 
     public EwsOutputTarget(EwsOutputOptions options)
     {
@@ -88,6 +91,15 @@ public sealed class EwsOutputTarget : IOutputTarget
         }
 
         var bytes = await File.ReadAllBytesAsync(item.StagedEmlPath, cancellationToken);
+
+        var messageId = TryReadMessageId(bytes);
+        if (!string.IsNullOrWhiteSpace(messageId) &&
+            await ExistsAsync(messageId, cancellationToken))
+        {
+            _alreadyPresent++;
+            return;
+        }
+
         var message = new EmailMessage(_service)
         {
             MimeContent = new MimeContent("UTF-8", bytes),
@@ -131,8 +143,47 @@ public sealed class EwsOutputTarget : IOutputTarget
 
     public Task CompleteAsync(OutputSummary summary, CancellationToken cancellationToken)
     {
-        Console.WriteLine($"  EWS: {_written} Items importiert.");
+        Console.WriteLine(
+            $"  EWS: {_written} Items importiert, {_alreadyPresent} bereits vorhanden (übersprungen).");
         return Task.CompletedTask;
+    }
+
+    private async Task<bool> ExistsAsync(string messageId, CancellationToken cancellationToken)
+    {
+        if (_service is null || _folder is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            var filter = new SearchFilter.IsEqualTo(
+                EmailMessageSchema.InternetMessageId,
+                messageId);
+            var view = new ItemView(1)
+            {
+                PropertySet = new PropertySet(BasePropertySet.IdOnly)
+            };
+
+            var result = await _service.FindItems(_folder.Id, filter, view);
+            return result.Items.Count > 0;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  EWS-Dedupe nicht verfügbar: {ex.Message}");
+            return false;
+        }
+    }
+
+    private static string? TryReadMessageId(byte[] eml)
+    {
+        var prefix = Encoding.ASCII.GetString(eml, 0, Math.Min(eml.Length, 32_768));
+        var match = Regex.Match(
+            prefix,
+            @"(?im)^Message-ID:\s*(<[^>]+>)",
+            RegexOptions.CultureInvariant);
+
+        return match.Success ? match.Groups[1].Value.Trim() : null;
     }
 
     public ValueTask DisposeAsync()
