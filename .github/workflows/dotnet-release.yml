@@ -1,0 +1,166 @@
+# =============================================================================
+# Release Workflow — david2exchange
+# =============================================================================
+# Based on the BAUER GROUP .NET release pattern:
+#   - PR/push validation                  -> dotnet-build.yml
+#   - Semantic versioning                 -> modules-semantic-release.yml
+#   - Self-contained single-file EXE      -> dotnet-publish-binaries.yml
+#
+# This project is Windows-only and x86-only (DvApi32 is 32-bit COM), so the
+# binary matrix intentionally contains exactly one RID: win-x86.
+# =============================================================================
+
+name: 🚀 Release & Publish
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      force-release:
+        description: "force create release (even without conventional commits)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+  issues: write
+  pull-requests: write
+  security-events: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Validation (PR + main)
+  # ---------------------------------------------------------------------------
+  validate:
+    name: 🔨 Build
+    uses: bauer-group/automation-templates/.github/workflows/dotnet-build.yml@main
+    with:
+      project-path: "David2Exchange.slnx"
+      dotnet-version: "10.0.x"
+      runs-on: "windows-latest"
+      run-tests: false
+      collect-coverage: false
+    secrets: inherit
+
+  # ---------------------------------------------------------------------------
+  # Semantic release (main / dispatch only)
+  # ---------------------------------------------------------------------------
+  release:
+    name: 📦 Create Release
+    needs: validate
+    if: |
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      github.event_name == 'workflow_dispatch'
+    uses: bauer-group/automation-templates/.github/workflows/modules-semantic-release.yml@main
+    with:
+      target-branch: "main"
+      force-release: ${{ inputs.force-release || false }}
+      extra-plugins: "semantic-release-dotnet"
+    secrets: inherit
+
+  # ---------------------------------------------------------------------------
+  # Self-contained single-file EXE -> GitHub Release
+  # ---------------------------------------------------------------------------
+  publish-binaries:
+    name: 📦 Publish EXE
+    needs: release
+    if: needs.release.outputs.release-created == 'true'
+    uses: bauer-group/automation-templates/.github/workflows/dotnet-publish-binaries.yml@main
+    with:
+      project-path: "src/David2Exchange/David2Exchange.csproj"
+      assembly-name: "david2exchange"
+      version: ${{ needs.release.outputs.version }}
+      global-json-file: "global.json"
+      platforms: |
+        [
+          { "rid": "win-x86", "os": "windows-latest", "archive": "zip" }
+        ]
+      self-contained: true
+      publish-single-file: true
+      publish-trimmed: false
+      publish-ready-to-run: false
+      include-native-libraries-for-self-extract: true
+      enable-compression-in-single-file: true
+      archive-name-template: "{assembly}-{version}-{rid}"
+      include-files: |
+        LICENSE
+        README.md
+        docs/CONFIG.md
+      generate-checksums: true
+      upload-to-release: true
+      release-asset-clobber: true
+      extra-msbuild-properties: "-p:PlatformTarget=x86"
+    secrets: inherit
+
+  # ---------------------------------------------------------------------------
+  # Raw self-contained EXE + checksum directly on the Release
+  # ---------------------------------------------------------------------------
+  publish-raw-exe:
+    name: 📦 Attach EXE
+    needs: release
+    if: needs.release.outputs.release-created == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: 📥 Checkout release tag
+        uses: actions/checkout@v7
+        with:
+          ref: refs/tags/v${{ needs.release.outputs.version }}
+          fetch-depth: 1
+
+      - name: 🔧 Setup .NET SDK
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: 🏗️ Publish self-contained single-file EXE
+        shell: pwsh
+        run: |
+          dotnet publish src/David2Exchange/David2Exchange.csproj `
+            -c Release `
+            -r win-x86 `
+            --self-contained true `
+            -p:Version=${{ needs.release.outputs.version }} `
+            -p:PlatformTarget=x86 `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:EnableCompressionInSingleFile=true `
+            -o publish/win-x86
+
+      - name: 📦 Stage EXE and SHA-256
+        shell: pwsh
+        run: |
+          $version = "${{ needs.release.outputs.version }}"
+          $name = "david2exchange-$version-win-x86.exe"
+          Copy-Item "publish/win-x86/david2exchange.exe" $name
+          $hash = (Get-FileHash -Algorithm SHA256 -Path $name).Hash.ToLower()
+          "$hash  $name" | Out-File -FilePath "${name}.sha256" -Encoding ascii -NoNewline
+          Add-Content -Path "${name}.sha256" -Value ''
+          Write-Host "SHA-256: $hash  $name"
+
+      - name: 📤 Upload EXE and checksum to Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $version = "${{ needs.release.outputs.version }}"
+          $name = "david2exchange-$version-win-x86.exe"
+          gh release upload "v$version" $name "${name}.sha256" --clobber
+
+      - name: 📤 Keep EXE as workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: david2exchange-${{ needs.release.outputs.version }}-win-x86-exe
+          path: |
+            david2exchange-*-win-x86.exe
+            david2exchange-*-win-x86.exe.sha256
+          if-no-files-found: error
+          retention-days: 14
+
