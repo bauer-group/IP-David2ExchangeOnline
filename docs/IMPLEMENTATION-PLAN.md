@@ -3,7 +3,7 @@
 **Professionelle Umsetzung der Migration Tobit David → Exchange Online**
 **Mehrserverfähig, MIT-Open-Source, EWS-only, LiteDB, Message-ID-basiert**
 
-> **Status:** Planungsstand 31.10.2026 (v2.3). Das Dokument beschreibt Architektur, Entscheidungen, Risiken und den ursprünglichen Zeitplan. Die **aktuelle Bedienung** steht in [README](../README.md), [CONFIG](CONFIG.md), [RELEASE](RELEASE.md) und [TEAM-PLAN](TEAM-PLAN.md); einzelne Termin- und Scope-Details können durch die Umsetzung überholt sein.
+> **Status:** Planungsstand 31.10.2026 (v2.3). Das Dokument beschreibt Architektur, Entscheidungen, Risiken und den ursprünglichen Zeitplan. Die **aktuelle Bedienung** steht in [README](../README.md), [CONFIG](CONFIG.md), [SETUP](SETUP.md) und [RELEASE](RELEASE.md); einzelne Termin- und Scope-Details können durch die Umsetzung überholt sein.
 
 | Feld | Inhalt |
 |---|---|

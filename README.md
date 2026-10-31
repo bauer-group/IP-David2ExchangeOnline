@@ -201,6 +201,4 @@ All commands run from the EXE; `--config` defaults to `migration.yaml` next to t
 - [Tenant setup: automatic and manual](docs/SETUP.md)
 - [Release and EXE](docs/RELEASE.md)
 - [Probe on the David workstation](docs/PROBE.md)
-- [Spike findings](docs/SPIKE.md)
-- [Team plan](docs/TEAM-PLAN.md)
 - Background: [Specification](docs/SPECIFICATION.md) · [Implementation plan](docs/IMPLEMENTATION-PLAN.md)

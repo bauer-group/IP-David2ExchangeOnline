@@ -1,6 +1,6 @@
 # 📧 Tobit David → Exchange Online: Umsetzungsanleitung david2exchange
 
-> **Status:** Ursprüngliche technische Spezifikation (v3, 30.10.2026). Sie beschreibt die fachliche Basis und die Leitplanken. Für die **aktuelle Implementierung und Bedienung** sind [README](../README.md), [CONFIG](CONFIG.md), [RELEASE](RELEASE.md) und [SPIKE](SPIKE.md) maßgeblich. Abweichungen zwischen Spezifikation und Umsetzung sind dort dokumentiert.
+> **Status:** Ursprüngliche technische Spezifikation (v3, 30.10.2026). Sie beschreibt die fachliche Basis und die Leitplanken. Für die **aktuelle Implementierung und Bedienung** sind [README](../README.md), [CONFIG](CONFIG.md), [SETUP](SETUP.md) und [RELEASE](RELEASE.md) maßgeblich. Abweichungen zwischen Spezifikation und Umsetzung sind dort dokumentiert.
 
 Migration der Tobit-David-Postfächer (Server SRV-BAUER, david 12.00a) nach Exchange Online. Stand: 30.10.2026 (v3: automatisiertes Tenant-Setup; v2: Dry-Run, Testmodus, Skip, Wiederaufnahme) · Lebensdauer des Tools: einmaliger Einsatz, max. 90 Tage · Zielsprache Code/Kommentare: Deutsch oder Englisch, Logs/Report: Deutsch.
 
