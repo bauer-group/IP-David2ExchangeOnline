@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.2.0](https://github.com/bauer-group/IP-David2Exchange/compare/v0.1.0...v0.2.0) (2026-10-31)
+
+### 🚀 Features
+
+* **ews:** dedupe imports by internet message id for safe resume ([1b9da67](https://github.com/bauer-group/IP-David2Exchange/commit/1b9da67213c26314fb6a83a8fe69a22634ee6763))
+
 ## [0.1.0](https://github.com/bauer-group/IP-David2Exchange/compare/v0.0.0...v0.1.0) (2026-10-31)
 
 ### 🚀 Features
