@@ -1,0 +1,60 @@
+<Project>
+  <!-- ============================================================
+       BAUER GROUP — david2exchange
+       Repository-wide MSBuild defaults. Imported automatically by
+       every .csproj in or below this folder.
+       ============================================================ -->
+  <PropertyGroup Label="Identity">
+    <Company>BAUER GROUP</Company>
+    <Authors>BAUER GROUP — IT-Infrastruktur / Software Engineering</Authors>
+    <Product>david2exchange</Product>
+    <Description>BAUER GROUP — Tobit-David-zu-Exchange-Online-Migrationstool (DvApi32/EWS, x86).</Description>
+    <Copyright>Copyright © BAUER GROUP $([System.DateTime]::UtcNow.ToString("yyyy"))</Copyright>
+    <Version>0.1.0</Version>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryUrl>https://github.com/bauer-group/IP-David2Exchange</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>$(RepositoryUrl)</PackageProjectUrl>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Versioning">
+    <!-- Single source of truth. semantic-release-dotnet rewrites Version.
+         AssemblyVersion/FileVersion must be numeric only (CS7034), so the
+         SemVer pre-release suffix is stripped from $(Version). -->
+    <AssemblyVersion>$(Version.Split('-')[0]).0</AssemblyVersion>
+    <FileVersion>$(Version.Split('-')[0]).0</FileVersion>
+    <InformationalVersion>$(Version)</InformationalVersion>
+  </PropertyGroup>
+
+  <PropertyGroup Label="LanguageRules">
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <WarningsNotAsErrors>NU1901;NU1902;NU1903;NU1904</WarningsNotAsErrors>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <CodeAnalysisTreatWarningsAsErrors>false</CodeAnalysisTreatWarningsAsErrors>
+    <!-- Intentional: COM/PInvoke interop, localized CLI output, interface-based
+         pipeline seams. Kept visible in code review, not as build noise. -->
+    <NoWarn>$(NoWarn);CS1591;CA1014;CA1304;CA1305;CA1716;CA1822;CA1838;CA1859;CA1861;CA1869;CA2101</NoWarn>
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true' or '$(TF_BUILD)' == 'true'">true</ContinuousIntegrationBuild>
+    <CheckEolTargetFramework>false</CheckEolTargetFramework>
+  </PropertyGroup>
+
+  <PropertyGroup Label="SourceLink">
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <DebugType>portable</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup Condition="Exists('$(MSBuildThisFileDirectory)README.md')">
+    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" Visible="false" />
+  </ItemGroup>
+  <ItemGroup Condition="Exists('$(MSBuildThisFileDirectory)LICENSE')">
+    <None Include="$(MSBuildThisFileDirectory)LICENSE" Pack="true" PackagePath="\" Visible="false" />
+  </ItemGroup>
+</Project>
