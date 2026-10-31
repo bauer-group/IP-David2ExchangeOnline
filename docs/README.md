@@ -4,6 +4,7 @@
 |---|---|---|
 | [README](../README.md) | Einstieg, Build, Schnellstart, Release | aktuell |
 | [CONFIG.md](CONFIG.md) | YAML-Referenz, `config create`, Mapping, Wellen, Mailbox-Setup | aktuell |
+| [SETUP.md](SETUP.md) | Tenant-Setup automatisch und manuell (App, Cert, Consent, EWS-Allowlist) | aktuell |
 | [RELEASE.md](RELEASE.md) | GitHub-Release, self-contained Single-File-EXE | aktuell |
 | [PROBE.md](PROBE.md) | DvApi-/EWS-Testlauf auf der David-Workstation | aktuell |
 | [SPIKE.md](SPIKE.md) | Erkenntnisse aus dem echten David-Test | aktuell |

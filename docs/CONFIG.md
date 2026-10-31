@@ -50,7 +50,7 @@ david2exchange targets
 david2exchange discover --config migration.yaml --limit 10
 david2exchange run --config migration.yaml --limit 10 --dry-run
 david2exchange run --config migration.yaml --limit 10 --output local
-david2exchange report --config migration.yaml --out staging\report.html
+david2exchange report --config migration.yaml --out data\report.html
 ```
 
 ## 2. Schema
@@ -73,9 +73,9 @@ m365:
   migrationAdminUpn: admin@example.com  # Vollzugriff auf neu angelegte Postfächer
 
 staging:
-  root: .\staging
-  manifest: .\staging\manifest.db
-  logs: .\staging\logs
+  root: .\data
+  manifest: .\data\manifest.db
+  logs: .\logs
 
 limits:
   limit: 10                            # Testlauf; 0 = alle
