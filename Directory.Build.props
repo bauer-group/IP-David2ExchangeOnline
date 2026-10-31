@@ -17,7 +17,6 @@
     <RepositoryType>git</RepositoryType>
     <PackageProjectUrl>$(RepositoryUrl)</PackageProjectUrl>
   </PropertyGroup>
-
   <PropertyGroup Label="Versioning">
     <!-- Single source of truth. semantic-release-dotnet rewrites Version.
          AssemblyVersion/FileVersion must be numeric only (CS7034), so the
@@ -26,7 +25,6 @@
     <FileVersion>$(Version.Split('-')[0]).0</FileVersion>
     <InformationalVersion>$(Version)</InformationalVersion>
   </PropertyGroup>
-
   <PropertyGroup Label="LanguageRules">
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
@@ -42,7 +40,6 @@
     <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true' or '$(TF_BUILD)' == 'true'">true</ContinuousIntegrationBuild>
     <CheckEolTargetFramework>false</CheckEolTargetFramework>
   </PropertyGroup>
-
   <PropertyGroup Label="SourceLink">
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
@@ -50,11 +47,10 @@
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
     <DebugType>portable</DebugType>
   </PropertyGroup>
-
   <ItemGroup Condition="Exists('$(MSBuildThisFileDirectory)README.md')">
-    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" Visible="false" />
+    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" Visible="false"/>
   </ItemGroup>
   <ItemGroup Condition="Exists('$(MSBuildThisFileDirectory)LICENSE')">
-    <None Include="$(MSBuildThisFileDirectory)LICENSE" Pack="true" PackagePath="\" Visible="false" />
+    <None Include="$(MSBuildThisFileDirectory)LICENSE" Pack="true" PackagePath="\" Visible="false"/>
   </ItemGroup>
 </Project>
