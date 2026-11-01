@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.3.3](https://github.com/bauer-group/IP-David2Exchange/compare/v0.3.2...v0.3.3) (2026-11-01)
+
+### 🐛 Bug Fixes
+
+* **fax:** prefer David EML and fall back to original image attachment ([fe2f84c](https://github.com/bauer-group/IP-David2Exchange/commit/fe2f84c90834e2bedd28b5e6679687b65c9ac0a4))
+
 ## [0.3.2](https://github.com/bauer-group/IP-David2Exchange/compare/v0.3.1...v0.3.2) (2026-11-01)
 
 ### 🐛 Bug Fixes
