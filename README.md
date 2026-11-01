@@ -77,6 +77,7 @@ Relative paths in `migration.yaml` resolve from the config folder. The default c
   --config migration.yaml --wave wave-1 --admin-upn admin@example.com
 
 # Tenant setup: app registration, certificate, consent, EWS allowlist
+# Login erfolgt per Device Code (URL + Code auf der Konsole)
 .\david2exchange.exe setup --config migration.yaml
 .\david2exchange.exe setup --config migration.yaml --check
 

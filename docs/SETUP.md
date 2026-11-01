@@ -26,11 +26,11 @@ cd C:\david2exchange
 ### Was `setup` tut
 
 1. Prüft `pwsh` und die benötigten Module; installiert fehlende Module nach Rückfrage im `CurrentUser`-Scope.
-2. Interaktiver Graph-Login (`Application.ReadWrite.All`, `AppRoleAssignment.ReadWrite.All`, `Directory.Read.All`).
-3. Erzeugt/verwendet ein selbstsigniertes Zertifikat `CN=david2exchange-migration` (RSA 2048, 6 Monate) in `CurrentUser\My`; legt den öffentlichen Teil als `.cer` neben die Config.
+2. **Device-Code-Login** bei Microsoft Graph (`Application.ReadWrite.All`, `AppRoleAssignment.ReadWrite.All`, `Directory.Read.All`). Die EXE startet `pwsh` ohne Output-Umleitung; URL und Code werden auf der Konsole angezeigt.
+3. Erzeugt/verwendet ein selbstsigniertes Zertifikat `CN=david2exchange-migration` (RSA 2048, 12 Monate) in `CurrentUser\My`; legt den öffentlichen Teil als `.cer` neben die Config. Wenn `New-SelfSignedCertificate` nicht antwortet, bricht die Erzeugung nach 90 s ab und fällt automatisch auf `certreq` zurück.
 4. Legt die App `david2exchange-migration` an oder aktualisiert sie (Single Tenant, `full_access_as_app` für Office 365 Exchange Online, Zertifikat als Key Credential).
 5. Legt den Service Principal an und erteilt Admin-Consent.
-6. Interaktiver Exchange-Online-Login; liest `EwsEnabled`/`EwsAllowedAppIDs`, sichert die **komplette** Liste nach `setup-backup-<datum>.json`, hängt die neue App-ID an (falls nicht vorhanden) und schreibt `EwsEnabled=true` **nur nach ausdrücklicher Freigabe**.
+6. Exchange-Online-Login per **Device Code**; liest `EwsEnabled`/`EwsAllowedAppIDs`, sichert die **komplette** Liste nach `setup-backup-<datum>.json`, hängt die neue App-ID an (falls nicht vorhanden) und schreibt `EwsEnabled=true` **nur nach ausdrücklicher Freigabe**.
 7. Liest die Liste erneut und prüft, dass fremde App-IDs (Veeam, Microsoft) unverändert vorhanden sind.
 8. Optional: `New-ApplicationAccessPolicy` auf eine Sicherheitsgruppe.
 9. Schreibt `tenantId`, `clientId`, `certThumbprint` in `migration.yaml` (Backup `.bak`).
@@ -91,7 +91,7 @@ $cert = New-SelfSignedCertificate `
   -KeyExportPolicy NonExportable `
   -KeyAlgorithm RSA `
   -KeyLength 2048 `
-  -NotAfter (Get-Date).AddMonths(6)
+  -NotAfter (Get-Date).AddMonths(12)
 
 $cert.Thumbprint
 Export-Certificate -Cert $cert -FilePath ".\david2exchange-migration.cer"
