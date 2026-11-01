@@ -437,6 +437,10 @@ public sealed class MigrationRunner
                     if (DavidItemTypes.IsMailLike(document.ItemType) &&
                         document.ItemType != "2")
                     {
+                        Console.WriteLine(
+                            $"  HINWEIS {item.Id}: David-EML nicht verfügbar; " +
+                            $"Fallback für {DavidItemTypes.Kind(document.ItemType)}.");
+
                         if (!WriteSyntheticEml(
                                 emlPath,
                                 item,
