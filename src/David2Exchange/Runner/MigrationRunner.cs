@@ -31,7 +31,10 @@ public sealed class MigrationRunner
             {
                 var archive = session.OpenArchive(mailbox.Source.ArchivePath);
                 var count = 0;
-                foreach (var (item, archivePath, folderPath) in Walk(archive, mailbox.ExcludeArchives))
+                foreach (var (item, archivePath, folderPath) in Walk(
+                             archive,
+                             mailbox.ExcludeArchives,
+                             archive.FolderKind))
                 {
                     if (limit > 0 && count >= limit)
                     {
@@ -170,7 +173,10 @@ public sealed class MigrationRunner
                     try
                     {
                         var archive = session.OpenArchive(mailbox.Source.ArchivePath);
-                        foreach (var (item, archivePath, folderPath) in Walk(archive, mailbox.ExcludeArchives))
+                        foreach (var (item, archivePath, folderPath) in Walk(
+                                     archive,
+                                     mailbox.ExcludeArchives,
+                                     archive.FolderKind))
                         {
                             var key = BuildKey(mailbox.Id, archivePath, item.Id);
                             if (!pendingKeys.Contains(key))
@@ -540,7 +546,9 @@ public sealed class MigrationRunner
         foreach (var subArchive in archive.SubArchives)
         {
             var segment = string.IsNullOrWhiteSpace(folderPath)
-                ? subArchive.FolderKey
+                ? (!string.IsNullOrWhiteSpace(subArchive.FolderKind)
+                    ? subArchive.FolderKind
+                    : subArchive.FolderKey)
                 : subArchive.Name;
             if (string.IsNullOrWhiteSpace(segment))
             {

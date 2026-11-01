@@ -118,6 +118,10 @@ public sealed class MockDavidSession : IDavidSession
 
         public string FolderKey => Name;
 
+        public int? ArchiveType => null;
+
+        public string FolderKind => "";
+
         public int? DeclaredItemCount => _items.Count;
 
         public IEnumerable<IDavidArchive> SubArchives => _subArchives;

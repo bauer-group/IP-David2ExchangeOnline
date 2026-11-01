@@ -454,12 +454,14 @@ public sealed class EwsOutputTarget : IOutputTarget
                 return true;
             case "trash":
             case "deleted":
+            case "deleteditems":
             case "gelöscht":
             case "papierkorb":
                 folder = WellKnownFolderName.DeletedItems;
                 return true;
             case "spam":
             case "junk":
+            case "junkemail":
                 folder = WellKnownFolderName.JunkEmail;
                 return true;
             case "cal":

@@ -16,6 +16,8 @@ internal sealed class DavidComArchive : IDavidArchive
                ?? DavidArchivePaths.LastSegment(ResolvedPath);
         FolderKey = DavidArchivePaths.LastSegment(
             ComHelpers.GetFirstString(archive, "ID", "ArchivePath") ?? ResolvedPath);
+        ArchiveType = (int?)ComHelpers.GetFirstLong(archive, "Type", "ArchiveType");
+        FolderKind = DavidArchiveTypes.ToFolderKind(ArchiveType);
     }
 
     public string RequestedPath { get; }
@@ -25,6 +27,10 @@ internal sealed class DavidComArchive : IDavidArchive
     public string Name { get; }
 
     public string FolderKey { get; }
+
+    public int? ArchiveType { get; }
+
+    public string FolderKind { get; }
 
     public int? DeclaredItemCount
     {

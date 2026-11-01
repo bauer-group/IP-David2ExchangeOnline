@@ -32,6 +32,12 @@ public interface IDavidArchive
     /// <summary>Technischer David-Ordnername, z. B. in, out, cal, address.</summary>
     string FolderKey { get; }
 
+    /// <summary>Sprachunabhängiger David-Archivtyp (DvArchiveTypes), z. B. 101 = Inbox.</summary>
+    int? ArchiveType { get; }
+
+    /// <summary>Sprachunabhängiger Zielordner-Schlüssel, z. B. inbox, sentitems, calendar.</summary>
+    string FolderKind { get; }
+
     int? DeclaredItemCount { get; }
 
     IEnumerable<IDavidArchive> SubArchives { get; }
