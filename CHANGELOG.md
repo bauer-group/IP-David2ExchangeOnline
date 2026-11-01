@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.2.2](https://github.com/bauer-group/IP-David2Exchange/compare/v0.2.1...v0.2.2) (2026-11-01)
+
+### 🐛 Bug Fixes
+
+* **run:** honor limits.limit and add explicit --all ([e7b591d](https://github.com/bauer-group/IP-David2Exchange/commit/e7b591dd471cc8264732767de698e87fd4e4eb99))
+
 ## [0.2.1](https://github.com/bauer-group/IP-David2Exchange/compare/v0.2.0...v0.2.1) (2026-11-01)
 
 ### 🐛 Bug Fixes
