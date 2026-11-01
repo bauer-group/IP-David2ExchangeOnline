@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.2.1](https://github.com/bauer-group/IP-David2Exchange/compare/v0.2.0...v0.2.1) (2026-11-01)
+
+### 🐛 Bug Fixes
+
+* **setup:** use device-code auth and certreq certificate fallback ([8282931](https://github.com/bauer-group/IP-David2Exchange/commit/8282931b47dd8408820b8f5220a093d1729946a2))
+
 ## [0.2.0](https://github.com/bauer-group/IP-David2Exchange/compare/v0.1.0...v0.2.0) (2026-10-31)
 
 ### 🚀 Features
