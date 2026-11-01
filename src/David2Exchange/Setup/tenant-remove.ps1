@@ -3,7 +3,8 @@
 param(
     [Parameter(Mandatory = $true)][string]$ConfigPath,
     [string]$AppName = "david2exchange-migration",
-    [string]$CertificateThumbprint = ""
+    [string]$CertificateThumbprint = "",
+    [string]$OutputJson = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,7 +21,10 @@ Ensure-Module "Microsoft.Graph.Applications"
 Ensure-Module "ExchangeOnlineManagement"
 
 Write-Host "Verbinde Microsoft Graph ..."
-Connect-MgGraph -Scopes "Application.ReadWrite.All", "AppRoleAssignment.ReadWrite.All", "Directory.Read.All" -NoWelcome
+Connect-MgGraph `
+    -Scopes "Application.ReadWrite.All", "AppRoleAssignment.ReadWrite.All", "Directory.Read.All" `
+    -UseDeviceAuthentication `
+    -NoWelcome
 
 $app = Get-MgApplication -Filter "displayName eq '$AppName'" -ConsistencyLevel eventual | Select-Object -First 1
 if (-not $app) {
@@ -28,7 +32,7 @@ if (-not $app) {
 }
 
 Write-Host "Verbinde Exchange Online ..."
-Connect-ExchangeOnline -ShowBanner:$false
+Connect-ExchangeOnline -Device -ShowBanner:$false
 
 $organization = Get-OrganizationConfig -RetrieveEwsOperationAccessPolicy
 $allowlistBefore = @($organization.EwsAllowedAppIDs | ForEach-Object { $_ -split "," } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
@@ -61,10 +65,17 @@ if ($CertificateThumbprint) {
     }
 }
 
-[pscustomobject]@{
+$result = [pscustomobject]@{
     ok = $true
     removedAppId = if ($app) { $app.AppId } else { $null }
     allowlistBefore = $allowlistBefore
     allowlistAfter = @($allowlistAfter)
     ewsEnabled = [bool]$organization.EwsEnabled
-} | ConvertTo-Json -Depth 6 -Compress
+}
+
+if (-not [string]::IsNullOrWhiteSpace($OutputJson)) {
+    $result | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $OutputJson -Encoding UTF8
+}
+else {
+    $result | ConvertTo-Json -Depth 6 -Compress
+}

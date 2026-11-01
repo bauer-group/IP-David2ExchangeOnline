@@ -5,6 +5,7 @@ param(
     [string]$AppName = "david2exchange-migration",
     [string]$CertificateThumbprint = "",
     [string]$AccessPolicyGroup = "",
+    [string]$OutputJson = "",
     [switch]$CheckOnly
 )
 
@@ -12,7 +13,13 @@ $ErrorActionPreference = "Stop"
 
 function Write-Result {
     param([hashtable]$Result)
-    $Result | ConvertTo-Json -Depth 8 -Compress
+    if (-not [string]::IsNullOrWhiteSpace($OutputJson)) {
+        $Result | ConvertTo-Json -Depth 8 |
+            Set-Content -LiteralPath $OutputJson -Encoding UTF8
+    }
+    else {
+        $Result | ConvertTo-Json -Depth 8 -Compress
+    }
 }
 
 function Ensure-Module {
@@ -32,7 +39,10 @@ $exchangeResourceId = "00000002-0000-0ff1-ce00-000000000000"
 $fullAccessRoleId = "dc890d15-9560-4a4c-9b7f-a736ec74ec40"
 
 Write-Host "Verbinde Microsoft Graph ..."
-Connect-MgGraph -Scopes "Application.ReadWrite.All", "AppRoleAssignment.ReadWrite.All", "Directory.Read.All" -NoWelcome
+Connect-MgGraph `
+    -Scopes "Application.ReadWrite.All", "AppRoleAssignment.ReadWrite.All", "Directory.Read.All" `
+    -UseDeviceAuthentication `
+    -NoWelcome
 
 $graphContext = Get-MgContext
 $tenantId = $graphContext.TenantId
@@ -45,7 +55,7 @@ if ($CheckOnly) {
         exit 0
     }
 
-    Connect-ExchangeOnline -ShowBanner:$false
+    Connect-ExchangeOnline -Device -ShowBanner:$false
     $config = Get-OrganizationConfig -RetrieveEwsOperationAccessPolicy
     $allowed = @($config.EwsAllowedAppIDs)
     Write-Result @{
@@ -61,6 +71,74 @@ if ($CheckOnly) {
     exit 0
 }
 
+function New-DavidCertificate {
+    param([string]$Subject, [int]$Months = 12)
+
+    # New-SelfSignedCertificate kann auf manchen Workstations in der
+    # Schlüsselerzeugung hängen. Deshalb mit Timeout und certreq-Fallback.
+    $job = Start-Job -ScriptBlock {
+        param($subject, $months)
+        New-SelfSignedCertificate `
+            -Subject $subject `
+            -CertStoreLocation "Cert:\CurrentUser\My" `
+            -KeyAlgorithm RSA `
+            -KeyLength 2048 `
+            -KeyExportPolicy NonExportable `
+            -NotAfter (Get-Date).AddMonths($months)
+    } -ArgumentList $Subject, $Months
+
+    if (Wait-Job $job -Timeout 90) {
+        $created = Receive-Job $job
+        Remove-Job $job -Force
+        if ($created) {
+            return $created
+        }
+    }
+    else {
+        Stop-Job $job -ErrorAction SilentlyContinue
+        Remove-Job $job -Force -ErrorAction SilentlyContinue
+        Write-Host "New-SelfSignedCertificate antwortet nicht; nutze certreq-Fallback ..."
+    }
+
+    $temp = Join-Path $env:TEMP ("david2exchange-cert-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $temp -Force | Out-Null
+    $inf = @'
+[Version]
+Signature="$Windows NT$"
+
+[NewRequest]
+Subject = "{0}"
+KeySpec = 1
+KeyLength = 2048
+Exportable = FALSE
+MachineKeySet = FALSE
+ProviderName = "Microsoft RSA SChannel Cryptographic Provider"
+ProviderType = 1
+RequestType = Cert
+KeyUsage = 0xA0
+'@ -f $Subject
+
+    $infPath = Join-Path $temp "request.inf"
+    $cerPath = Join-Path $temp "certificate.cer"
+    Set-Content -LiteralPath $infPath -Value $inf -Encoding ASCII
+
+    $output = & certreq -new $infPath $cerPath 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Zertifikatserstellung fehlgeschlagen (certreq): $output"
+    }
+
+    $certificate = Get-ChildItem Cert:\CurrentUser\My |
+        Where-Object { $_.Subject -eq $Subject -and $_.HasPrivateKey } |
+        Sort-Object NotAfter -Descending |
+        Select-Object -First 1
+
+    if (-not $certificate) {
+        throw "certreq meldete Erfolg, aber kein Zertifikat mit privatem Schlüssel gefunden."
+    }
+
+    return $certificate
+}
+
 if (-not $CertificateThumbprint) {
     $certificate = Get-ChildItem Cert:\CurrentUser\My |
         Where-Object { $_.Subject -eq "CN=$AppName" -and $_.NotAfter -gt (Get-Date).AddDays(30) } |
@@ -68,14 +146,7 @@ if (-not $CertificateThumbprint) {
 
     if (-not $certificate) {
         Write-Host "Erzeuge selbstsigniertes Zertifikat ..."
-        $certificate = New-SelfSignedCertificate `
-            -Subject "CN=$AppName" `
-            -CertStoreLocation "Cert:\CurrentUser\My" `
-            -KeySpec Signature `
-            -KeyExportPolicy NonExportable `
-            -KeyAlgorithm RSA `
-            -KeyLength 2048 `
-            -NotAfter (Get-Date).AddMonths(12)
+        $certificate = New-DavidCertificate -Subject "CN=$AppName" -Months 12
     }
 
     $CertificateThumbprint = $certificate.Thumbprint
@@ -139,7 +210,7 @@ if (-not $existingAssignment) {
 }
 
 Write-Host "Verbinde Exchange Online ..."
-Connect-ExchangeOnline -ShowBanner:$false
+Connect-ExchangeOnline -Device -ShowBanner:$false
 
 $organization = Get-OrganizationConfig -RetrieveEwsOperationAccessPolicy
 $allowlistBefore = @($organization.EwsAllowedAppIDs | ForEach-Object { $_ -split "," } | ForEach-Object { $_.Trim() } | Where-Object { $_ })

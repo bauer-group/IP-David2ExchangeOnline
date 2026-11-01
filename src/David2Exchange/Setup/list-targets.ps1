@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: MIT
 [CmdletBinding()]
-param()
+param(
+    [string]$OutputJson = ""
+)
 
 $ErrorActionPreference = "Stop"
 
@@ -9,7 +11,7 @@ if (-not (Get-Module -ListAvailable -Name ExchangeOnlineManagement)) {
 }
 
 Import-Module ExchangeOnlineManagement -ErrorAction Stop
-Connect-ExchangeOnline -ShowBanner:$false
+Connect-ExchangeOnline -Device -ShowBanner:$false
 
 try {
     $mailboxes = Get-EXOMailbox -ResultSize Unlimited
@@ -23,4 +25,10 @@ $result = $mailboxes |
     Select-Object DisplayName, PrimarySmtpAddress, RecipientTypeDetails, EmailAddresses |
     Sort-Object PrimarySmtpAddress
 
-@($result) | ConvertTo-Json -Depth 3 -AsArray
+$json = @($result) | ConvertTo-Json -Depth 3 -AsArray
+if (-not [string]::IsNullOrWhiteSpace($OutputJson)) {
+    $json | Set-Content -LiteralPath $OutputJson -Encoding UTF8
+}
+else {
+    $json
+}

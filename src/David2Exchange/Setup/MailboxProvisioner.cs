@@ -67,9 +67,9 @@ public static class MailboxProvisioner
             var startInfo = new ProcessStartInfo("pwsh")
             {
                 UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true
+                RedirectStandardOutput = false,
+                RedirectStandardError = false,
+                CreateNoWindow = false
             };
 
             startInfo.ArgumentList.Add("-NoProfile");
@@ -87,18 +87,10 @@ public static class MailboxProvisioner
             using var process = Process.Start(startInfo)
                                 ?? throw new CliException("pwsh konnte nicht gestartet werden.");
 
-            var stdout = await process.StandardOutput.ReadToEndAsync(cancellationToken);
-            var stderr = await process.StandardError.ReadToEndAsync(cancellationToken);
             await process.WaitForExitAsync(cancellationToken);
-
-            if (!string.IsNullOrWhiteSpace(stdout))
-            {
-                Console.WriteLine(stdout);
-            }
 
             if (process.ExitCode != 0)
             {
-                Console.Error.WriteLine(stderr);
                 throw new CliException($"Postfach-Setup endete mit Exit-Code {process.ExitCode}.");
             }
 

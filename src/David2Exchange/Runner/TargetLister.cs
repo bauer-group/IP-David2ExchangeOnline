@@ -47,49 +47,54 @@ public static class TargetLister
     public static async Task<IReadOnlyList<MailboxTarget>> LoadAsync(CancellationToken cancellationToken = default)
     {
         var scriptPath = Infrastructure.EmbeddedScripts.GetScriptPath("list-targets.ps1");
+        var resultPath = Path.Combine(
+            Path.GetTempPath(),
+            $"david2exchange-targets-{Guid.NewGuid():N}.json");
 
         var startInfo = new ProcessStartInfo("pwsh")
         {
             UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true
+            RedirectStandardOutput = false,
+            RedirectStandardError = false,
+            CreateNoWindow = false
         };
         startInfo.ArgumentList.Add("-NoProfile");
         startInfo.ArgumentList.Add("-File");
         startInfo.ArgumentList.Add(scriptPath);
+        startInfo.ArgumentList.Add("-OutputJson");
+        startInfo.ArgumentList.Add(resultPath);
 
-        using var process = Process.Start(startInfo)
-                            ?? throw new CliException("pwsh konnte nicht gestartet werden.");
-
-        var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
-        await process.WaitForExitAsync(cancellationToken);
-
-        var stdout = await stdoutTask;
-        var stderr = await stderrTask;
-
-        if (process.ExitCode != 0)
+        try
         {
-            Console.Error.WriteLine(stderr);
-            throw new CliException($"Postfach-Liste endete mit Exit-Code {process.ExitCode}.");
+            using var process = Process.Start(startInfo)
+                                ?? throw new CliException("pwsh konnte nicht gestartet werden.");
+
+            await process.WaitForExitAsync(cancellationToken);
+
+            if (process.ExitCode != 0)
+            {
+                throw new CliException($"Postfach-Liste endete mit Exit-Code {process.ExitCode}.");
+            }
+
+            if (!File.Exists(resultPath))
+            {
+                throw new CliException("Postfach-Liste lieferte kein JSON-Ergebnis.");
+            }
+
+            var jsonText = await File.ReadAllTextAsync(resultPath, cancellationToken);
+            return JsonSerializer.Deserialize<List<MailboxTarget>>(jsonText, JsonOptions)
+                   ?? new List<MailboxTarget>();
         }
-
-        var jsonText = ExtractJson(stdout);
-        return JsonSerializer.Deserialize<List<MailboxTarget>>(jsonText, JsonOptions)
-               ?? new List<MailboxTarget>();
-    }
-
-    private static string ExtractJson(string output)
-    {
-        var span = output.AsSpan();
-        var start = span.IndexOf('[');
-        var end = span.LastIndexOf(']');
-        if (start < 0 || end <= start)
+        finally
         {
-            throw new CliException("Postfach-Liste lieferte kein JSON-Array.");
+            try
+            {
+                File.Delete(resultPath);
+            }
+            catch (Exception)
+            {
+                // Temporäre Datei ist unkritisch.
+            }
         }
-
-        return output[start..(end + 1)];
     }
 }

@@ -30,13 +30,17 @@ public sealed class SetupRunner
 
         var scriptName = options.Remove ? "tenant-remove.ps1" : "tenant-setup.ps1";
         var scriptPath = EmbeddedScripts.GetScriptPath(scriptName);
+        var resultPath = Path.Combine(
+            Path.GetTempPath(),
+            $"david2exchange-setup-{Guid.NewGuid():N}.json");
 
         var arguments = new List<string>
         {
             "-NoProfile",
             "-File", scriptPath,
             "-ConfigPath", Path.GetFullPath(options.ConfigPath),
-            "-AppName", options.AppName
+            "-AppName", options.AppName,
+            "-OutputJson", resultPath
         };
 
         if (!string.IsNullOrWhiteSpace(options.CertificateThumbprint))
@@ -59,9 +63,9 @@ public sealed class SetupRunner
         var startInfo = new ProcessStartInfo("pwsh")
         {
             UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true
+            RedirectStandardOutput = false,
+            RedirectStandardError = false,
+            CreateNoWindow = false
         };
 
         foreach (var argument in arguments)
@@ -69,38 +73,26 @@ public sealed class SetupRunner
             startInfo.ArgumentList.Add(argument);
         }
 
-        using var process = Process.Start(startInfo)
-                            ?? throw new CliException("pwsh konnte nicht gestartet werden.");
-
-        var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
-        await process.WaitForExitAsync(cancellationToken);
-
-        var stdout = await stdoutTask;
-        var stderr = await stderrTask;
-
-        if (!string.IsNullOrWhiteSpace(stdout))
+        try
         {
-            Console.WriteLine(stdout);
-        }
+            using var process = Process.Start(startInfo)
+                                ?? throw new CliException("pwsh konnte nicht gestartet werden.");
 
-        if (process.ExitCode != 0)
-        {
-            Console.Error.WriteLine(stderr);
-            throw new CliException($"Setup-Skript endete mit Exit-Code {process.ExitCode}.");
-        }
+            await process.WaitForExitAsync(cancellationToken);
 
-        var jsonLine = stdout
-            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .LastOrDefault(line => line.StartsWith('{') && line.EndsWith('}'));
+            if (process.ExitCode != 0)
+            {
+                throw new CliException($"Setup-Skript endete mit Exit-Code {process.ExitCode}.");
+            }
 
-        if (jsonLine is null)
-        {
-            throw new CliException("Setup-Skript lieferte kein JSON-Ergebnis.");
-        }
+            if (!File.Exists(resultPath))
+            {
+                throw new CliException("Setup-Skript lieferte kein JSON-Ergebnis.");
+            }
 
-        using var document = JsonDocument.Parse(jsonLine);
-        var root = document.RootElement;
+            var json = await File.ReadAllTextAsync(resultPath, cancellationToken);
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
 
         if (options.Remove)
         {
@@ -126,7 +118,19 @@ public sealed class SetupRunner
             Console.WriteLine("m365-Werte in die Config geschrieben.");
         }
 
-        return 0;
+            return 0;
+        }
+        finally
+        {
+            try
+            {
+                File.Delete(resultPath);
+            }
+            catch (Exception)
+            {
+                // Temporäre Ergebnisdatei ist unkritisch.
+            }
+        }
     }
 
     private static void UpdateM365(string configPath, string tenantId, string clientId, string thumbprint)

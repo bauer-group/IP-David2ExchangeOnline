@@ -13,7 +13,7 @@ if (-not (Get-Module -ListAvailable -Name ExchangeOnlineManagement)) {
 }
 
 Import-Module ExchangeOnlineManagement -ErrorAction Stop
-Connect-ExchangeOnline -ShowBanner:$false
+Connect-ExchangeOnline -Device -ShowBanner:$false
 
 $targets = Get-Content -LiteralPath $InputJson -Raw | ConvertFrom-Json
 $created = 0
