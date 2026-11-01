@@ -14,7 +14,6 @@ m365:
   certThumbprint: ""               # setup trägt ein (CurrentUser\My)
   ewsUrl: https://outlook.office365.com/EWS/Exchange.asmx
   provenanceDomain: david.example.local
-  ewsFolder: David-Migration
   migrationAdminUpn: ""            # Vollzugriff auf neu angelegte Postfächer
 
 staging:

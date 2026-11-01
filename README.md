@@ -2,7 +2,7 @@
 
 Tobit David → Exchange Online migration tool for Windows x86. The tool runs on a workstation with the David client installed; it is not installed as a service.
 
-**Current status:** mail, fax, SMS, voice, chat, calendar, contacts and David folder hierarchy are implemented. Mail/fax/SMS/voice/chat use EML (with a synthetic EML fallback for non-mail); calendar becomes an EWS appointment, contacts become EWS contacts, and subfolders are created below the configured target folder. The David export path has been tested against a real server; the EWS path still needs a tenant end-to-end test. See [Supported content](#supported-content).
+**Current status:** mail, fax, SMS, voice, chat, calendar, contacts and David folder hierarchy are implemented. Mail/fax/SMS/voice/chat use EML (with a synthetic EML fallback for non-mail); calendar becomes an EWS appointment, contacts become EWS contacts. Messages are written into the existing target folders (`Inbox`, `Sent Items`, `Drafts`, `Deleted Items`, `Junk Email`, `Calendar`, `Contacts`, `Tasks`) and their subfolders. The David export path has been tested against a real server; the EWS path still needs a tenant end-to-end test. See [Supported content](#supported-content).
 
 ## 1. Get the executable
 
@@ -110,11 +110,27 @@ Relative paths in `migration.yaml` resolve from the config folder. The default c
 | Voice | yes | yes | EML if David exports the audio; otherwise synthetic text EML |
 | Calendar | yes | yes | EWS Appointment; recurring series currently as single appointment with note |
 | Contacts | yes | yes | EWS Contact field mapping (name, e-mail, phone, fax, mobile, notes) |
-| Folder tree | yes | yes | subfolders below the configured target folder |
+| Folder tree | yes | yes | Inbox/Sent/Calendar/Contacts plus source subfolders |
 | Read state | yes | yes | mail only |
 | Deletions/moves in target | – | no | deliberately not synchronized |
 
 Unsupported items are **not silently dropped**: they are written to the manifest as `skipped` with `last_error`/reason and appear in the report. See [docs/CONFIG.md](docs/CONFIG.md) for `include` and reporting.
+
+### Folder mapping
+
+| David archive root | Exchange folder |
+|---|---|
+| `in` / Eingang | Inbox |
+| `out` / Ausgang | Sent Items |
+| `draft` / Entwürfe | Drafts |
+| `trash` / Gelöscht | Deleted Items |
+| `spam` / Junk | Junk Email |
+| `cal` / Kalender | Calendar (EWS Appointment) |
+| `address` / Adressen | Contacts (EWS Contact) |
+| `todo` / Aufgaben | Tasks |
+| unknown / Unverteilt | Inbox with the source folder name as subfolder |
+
+Subfolders below these roots are created with the same hierarchy. Root-level David items go to Inbox.
 
 ## 5. Delta migration for active mailboxes
 
