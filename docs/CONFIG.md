@@ -53,6 +53,14 @@ david2exchange run --config migration.yaml --limit 10 --output local
 david2exchange report --config migration.yaml --out data\report.html
 ```
 
+Für einen vollständigen Lauf bzw. Delta alle offenen Items:
+
+```powershell
+david2exchange run --config migration.yaml --wave wave-1 --all --output ews
+```
+
+`limits.limit` gilt, wenn kein `--limit`/`--all` angegeben wird.
+
 ## 2. Schema
 
 ```yaml
@@ -78,7 +86,7 @@ staging:
   logs: .\logs
 
 limits:
-  limit: 10                            # Testlauf; 0 = alle
+  limit: 10                            # Standard; 0 = alle; --all überschreibt
   retries: 3
 
 mailboxes:

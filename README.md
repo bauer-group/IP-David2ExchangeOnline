@@ -97,7 +97,7 @@ Relative paths in `migration.yaml` resolve from the config folder. The default c
 .\david2exchange.exe report --config migration.yaml --out data\report.html
 ```
 
-`--limit` is a test guard; without it, all pending items of the selected wave are processed.
+`--limit` is a test guard. Without `--limit`, `limits.limit` from `migration.yaml` applies (10 in the example). Use `--all` or `limits.limit: 0` for a complete/delta run over all pending items.
 
 ## 4. Supported content
 
@@ -132,8 +132,8 @@ Recommended operation:
 # Initial run per wave (can run overnight)
 .\david2exchange.exe run --config migration.yaml --wave wave-1 --output ews
 
-# Daily delta for active mailboxes (same command)
-.\david2exchange.exe run --config migration.yaml --wave wave-1 --output ews
+# Daily delta for active mailboxes: use --all (or limits.limit: 0)
+.\david2exchange.exe run --config migration.yaml --wave wave-1 --all --output ews
 
 # Unverteilt more frequently, e.g. hourly
 .\david2exchange.exe run --config migration.yaml --mailbox unverteilt --output ews
