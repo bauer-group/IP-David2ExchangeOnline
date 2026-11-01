@@ -104,7 +104,7 @@ mailboxes:
       alias: karl.bauer
       aliases: []                      # zusätzliche SMTP-Adressen
       createIfMissing: false           # Shared Mailbox bei Bedarf anlegen
-    include: [mail]                    # mail, fax, sms, chat, voice, calendar, contacts
+    include: [mail, fax, sms, voice, chat, calendar, contacts]  # alle unterstützten Typen
     excludeArchives: []                # Teilbäume, z. B. ["ADDRESS"]
 
   - id: unverteilt
@@ -128,6 +128,7 @@ mailboxes:
 - **`source.email`:** Pflicht für aktive Benutzerpostfächer; nur diese Adresse wird für das Mapping verwendet.
 - **`target.aliases`:** zusätzliche SMTP-Adressen, die beim Anlegen/Ergänzen gesetzt werden.
 - **`target.createIfMissing`:** nur für Shared Mailboxes automatisch; User-Mailboxes werden nicht automatisch lizenziert.
+- **`include`:** steuert die Typen. `mail`, `fax`, `sms`, `voice`, `chat`, `calendar`, `contacts` oder `all`. Fehlt der Typ, wird das Item bewusst als `skipped` geführt.
 - **Mehrere Quellen auf ein Ziel:** erlaubt; `id` muss eindeutig sein.
 - **Typen:** 1 = Adresse/Kontakt, 2 = Mail, 7 = Kalender (auf SRV-BAUER beobachtet). Der Lokal-Export schreibt derzeit Mail (Typ 2).
 

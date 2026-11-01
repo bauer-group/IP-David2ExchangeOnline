@@ -2,7 +2,7 @@
 
 Tobit David → Exchange Online migration tool for Windows x86. The tool runs on a workstation with the David client installed; it is not installed as a service.
 
-**Current status:** mail export/import is implemented; the David export path has been tested against a real server, the EWS path still needs a tenant test. Fax/SMS/chat/voice/calendar/contacts are detected by the probe but are **not migrated yet** (they are marked `skipped` with a reason). Folder hierarchy is not yet reproduced 1:1; mail is currently written to the configured target folder. See [Supported content](#supported-content).
+**Current status:** mail, fax, SMS, voice, chat, calendar, contacts and David folder hierarchy are implemented. Mail/fax/SMS/voice/chat use EML (with a synthetic EML fallback for non-mail); calendar becomes an EWS appointment, contacts become EWS contacts, and subfolders are created below the configured target folder. The David export path has been tested against a real server; the EWS path still needs a tenant end-to-end test. See [Supported content](#supported-content).
 
 ## 1. Get the executable
 
@@ -104,13 +104,13 @@ Relative paths in `migration.yaml` resolve from the config folder. The default c
 | David content | Detection / probe | Migration | Notes |
 |---|---|---|---|
 | E-mails | yes | **yes** | EML, MIME, original Message-ID, sent/received date, read state |
-| Fax | yes | no | planned as synthetic mail with image attachment |
-| SMS | yes | no | planned as synthetic mail with text |
-| Chat | yes | no | planned as synthetic mail with conversation text |
-| Voice | yes | no | planned as synthetic mail with audio attachment |
-| Calendar | yes | no | planned as appointment mapping |
-| Contacts | yes | no | planned as field mapping (vCard fallback) |
-| Folder tree | yes | no | currently one configured target folder per mailbox; 1:1 mapping planned |
+| Fax | yes | yes | EML if David exports it; otherwise synthetic text EML |
+| SMS | yes | yes | EML/synthetic text EML |
+| Chat | yes | yes | EML/synthetic text EML |
+| Voice | yes | yes | EML if David exports the audio; otherwise synthetic text EML |
+| Calendar | yes | yes | EWS Appointment; recurring series currently as single appointment with note |
+| Contacts | yes | yes | EWS Contact field mapping (name, e-mail, phone, fax, mobile, notes) |
+| Folder tree | yes | yes | subfolders below the configured target folder |
 | Read state | yes | yes | mail only |
 | Deletions/moves in target | – | no | deliberately not synchronized |
 

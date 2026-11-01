@@ -41,7 +41,7 @@ mailboxes:
       alias: user01
       aliases: []
       createIfMissing: false
-    include: [mail]
+    include: [mail, fax, sms, voice, chat, calendar, contacts]
     excludeArchives: []
 
   - id: unverteilt
@@ -57,5 +57,5 @@ mailboxes:
       alias: david-unverteilt
       aliases: []
       createIfMissing: true
-    include: [mail]
+    include: [mail, fax, sms, voice, chat, calendar, contacts]
     excludeArchives: ["ADDRESS", "#001#Adressen"]
