@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.3.1](https://github.com/bauer-group/IP-David2Exchange/compare/v0.3.0...v0.3.1) (2026-11-01)
+
+### 🐛 Bug Fixes
+
+* **ews:** map David folders into existing Inbox/Sent/Calendar/Contacts ([f930030](https://github.com/bauer-group/IP-David2Exchange/commit/f93003088f682b519ea29bcc60a399d8e016c343))
+
 ## [0.3.0](https://github.com/bauer-group/IP-David2Exchange/compare/v0.2.2...v0.3.0) (2026-11-01)
 
 ### 🚀 Features
