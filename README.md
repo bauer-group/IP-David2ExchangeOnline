@@ -104,10 +104,10 @@ Relative paths in `migration.yaml` resolve from the config folder. The default c
 | David content | Detection / probe | Migration | Notes |
 |---|---|---|---|
 | E-mails | yes | **yes** | EML, MIME, original Message-ID, sent/received date, read state |
-| Fax | yes | yes | EML if David exports it; otherwise synthetic text EML |
+| Fax | yes | yes | EML if David exports it; otherwise synthetic EML with image attachment |
 | SMS | yes | yes | EML/synthetic text EML |
 | Chat | yes | yes | EML/synthetic text EML |
-| Voice | yes | yes | EML if David exports the audio; otherwise synthetic text EML |
+| Voice | yes | yes | EML with the original WAV attachment; **no transcription is generated** |
 | Calendar | yes | yes | EWS Appointment; recurring series currently as single appointment with note |
 | Contacts | yes | yes | EWS Contact field mapping (name, e-mail, phone, fax, mobile, notes) |
 | Folder tree | yes | yes | Inbox/Sent/Calendar/Contacts plus source subfolders |

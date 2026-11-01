@@ -128,6 +128,7 @@ mailboxes:
 - **`target.aliases`:** zusätzliche SMTP-Adressen, die beim Anlegen/Ergänzen gesetzt werden.
 - **`target.createIfMissing`:** nur für Shared Mailboxes automatisch; User-Mailboxes werden nicht automatisch lizenziert.
 - **`include`:** steuert die Typen. `mail`, `fax`, `sms`, `voice`, `chat`, `calendar`, `contacts` oder `all`. Fehlt der Typ, wird das Item bewusst als `skipped` geführt.
+- **Voice:** wird als Mail mit der Original-WAV-Datei als Anhang migriert. Es wird **keine Transkription** erzeugt.
 - **Mehrere Quellen auf ein Ziel:** erlaubt; `id` muss eindeutig sein.
 - **Typen:** 1 = Adresse/Kontakt, 2 = Mail, 7 = Kalender (auf SRV-BAUER beobachtet). Der Lokal-Export schreibt derzeit Mail (Typ 2).
 
