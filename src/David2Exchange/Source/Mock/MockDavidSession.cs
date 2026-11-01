@@ -185,6 +185,19 @@ public sealed class MockDavidSession : IDavidSession
 
         public IReadOnlyDictionary<string, string?> Properties { get; }
 
+        public IReadOnlyList<DavidAttachmentInfo> Attachments => Array.Empty<DavidAttachmentInfo>();
+
+        public bool TryCopyAttachment(
+            DavidAttachmentInfo attachment,
+            string directory,
+            out string? copiedPath,
+            out string? error)
+        {
+            copiedPath = null;
+            error = "Mock hat keine Anhänge.";
+            return false;
+        }
+
         public bool TryExportEml(string path, out string? error)
         {
             try

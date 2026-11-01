@@ -57,5 +57,19 @@ public interface IDavidItem
 
     IReadOnlyDictionary<string, string?> Properties { get; }
 
+    IReadOnlyList<DavidAttachmentInfo> Attachments { get; }
+
     bool TryExportEml(string path, out string? error);
+
+    bool TryCopyAttachment(
+        DavidAttachmentInfo attachment,
+        string directory,
+        out string? copiedPath,
+        out string? error);
 }
+
+public sealed record DavidAttachmentInfo(
+    string FileName,
+    string? FileType,
+    string? SourcePath,
+    long? SizeBytes);

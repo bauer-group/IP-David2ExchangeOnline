@@ -397,7 +397,21 @@ public sealed class MigrationRunner
                     if (DavidItemTypes.IsMailLike(document.ItemType) &&
                         document.ItemType != "2")
                     {
-                        WriteSyntheticEml(emlPath, item, mailbox, document.ItemType);
+                        if (!WriteSyntheticEml(
+                                emlPath,
+                                item,
+                                mailbox,
+                                document.ItemType,
+                                emlStageDirectory,
+                                out var syntheticError))
+                        {
+                            document.State = ItemState.Failed;
+                            document.Attempts++;
+                            document.LastError = syntheticError;
+                            manifest.Save(document);
+                            Console.Error.WriteLine($"  FEHLER {item.Id}: {syntheticError}");
+                            return;
+                        }
                     }
                     else
                     {
@@ -553,12 +567,16 @@ public sealed class MigrationRunner
         return $"{mailboxId}|{archivePath}|{davidId}";
     }
 
-    private static void WriteSyntheticEml(
+    private static bool WriteSyntheticEml(
         string path,
         IDavidItem item,
         MailboxMapping mailbox,
-        string type)
+        string type,
+        string stageDirectory,
+        out string? error)
     {
+        error = null;
+
         string Get(string key) =>
             item.Properties.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value)
                 ? value
@@ -576,6 +594,34 @@ public sealed class MigrationRunner
         var body = Get("BodyText");
         var date = item.ReceivedLocal ?? DateTime.Now;
 
+        var attachments = new List<(string Name, string Path)>();
+        if (item.Attachments.Count > 0)
+        {
+            var attachmentDirectory = Path.Combine(
+                stageDirectory,
+                "attachments",
+                Sanitize(item.Id));
+            Directory.CreateDirectory(attachmentDirectory);
+
+            foreach (var attachment in item.Attachments)
+            {
+                if (!item.TryCopyAttachment(
+                        attachment,
+                        attachmentDirectory,
+                        out var copiedPath,
+                        out var copyError))
+                {
+                    error = $"Anhang '{attachment.FileName}' konnte nicht exportiert werden: {copyError}";
+                    return false;
+                }
+
+                if (copiedPath is not null)
+                {
+                    attachments.Add((attachment.FileName, copiedPath));
+                }
+            }
+        }
+
         var builder = new StringBuilder();
         builder.AppendLine($"From: {SanitizeHeader(from)}");
         builder.AppendLine($"To: {SanitizeHeader(to)}");
@@ -583,15 +629,72 @@ public sealed class MigrationRunner
         builder.AppendLine($"Date: {date:r}");
         builder.AppendLine($"Message-ID: <david-{Sanitize(item.Id)}@{mailbox.Id}.david.local>");
         builder.AppendLine("MIME-Version: 1.0");
-        builder.AppendLine("Content-Type: text/plain; charset=utf-8");
         builder.AppendLine($"X-David-Type: {kind}");
         builder.AppendLine($"X-David-Item-ID: {SanitizeHeader(item.Id)}");
-        builder.AppendLine();
-        builder.AppendLine(body);
-        builder.AppendLine();
-        builder.AppendLine("[Migriert aus David. Originalformat konnte nicht als EML exportiert werden.]");
+
+        if (attachments.Count == 0)
+        {
+            builder.AppendLine("Content-Type: text/plain; charset=utf-8");
+            builder.AppendLine();
+            builder.AppendLine(body);
+            builder.AppendLine();
+            builder.AppendLine("[Migriert aus David. Originalformat konnte nicht als EML exportiert werden.]");
+        }
+        else
+        {
+            var boundary = "----david2exchange-" + Guid.NewGuid().ToString("N");
+            builder.AppendLine($"Content-Type: multipart/mixed; boundary=\"{boundary}\"");
+            builder.AppendLine();
+            builder.AppendLine($"--{boundary}");
+            builder.AppendLine("Content-Type: text/plain; charset=utf-8");
+            builder.AppendLine();
+            builder.AppendLine(body);
+            builder.AppendLine();
+            builder.AppendLine("[Migriert aus David. Originalformat inkl. Anhängen.]");
+
+            foreach (var attachment in attachments)
+            {
+                var name = SanitizeHeader(attachment.Name);
+                var mime = MimeTypeFor(name);
+                builder.AppendLine($"--{boundary}");
+                builder.AppendLine($"Content-Type: {mime}; name=\"{name}\"");
+                builder.AppendLine("Content-Transfer-Encoding: base64");
+                builder.AppendLine($"Content-Disposition: attachment; filename=\"{name}\"");
+                builder.AppendLine();
+                builder.AppendLine(WrapBase64(File.ReadAllBytes(attachment.Path)));
+            }
+
+            builder.AppendLine($"--{boundary}--");
+        }
 
         File.WriteAllText(path, builder.ToString(), new UTF8Encoding(false));
+        return true;
+    }
+
+    private static string MimeTypeFor(string fileName)
+    {
+        return Path.GetExtension(fileName).ToLowerInvariant() switch
+        {
+            ".wav" => "audio/wav",
+            ".mp3" => "audio/mpeg",
+            ".tif" or ".tiff" => "image/tiff",
+            ".pdf" => "application/pdf",
+            ".jpg" or ".jpeg" => "image/jpeg",
+            ".png" => "image/png",
+            _ => "application/octet-stream"
+        };
+    }
+
+    private static string WrapBase64(byte[] data)
+    {
+        var base64 = Convert.ToBase64String(data);
+        var builder = new StringBuilder(base64.Length + base64.Length / 76 * 2);
+        for (var offset = 0; offset < base64.Length; offset += 76)
+        {
+            builder.AppendLine(base64.Substring(offset, Math.Min(76, base64.Length - offset)));
+        }
+
+        return builder.ToString();
     }
 
     private static string SanitizeHeader(string value)

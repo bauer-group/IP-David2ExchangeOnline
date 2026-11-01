@@ -55,6 +55,144 @@ internal sealed class DavidComItem : IDavidItem
 
     public IReadOnlyDictionary<string, string?> Properties { get; }
 
+    public IReadOnlyList<DavidAttachmentInfo> Attachments
+    {
+        get
+        {
+            if (!ComHelpers.TryGetProperty(_item, "Attachments", out var value) ||
+                value is null)
+            {
+                return Array.Empty<DavidAttachmentInfo>();
+            }
+
+            var result = new List<DavidAttachmentInfo>();
+            foreach (var attachment in ComHelpers.Enumerate(value))
+            {
+                var fileName = ComHelpers.GetFirstString(
+                    attachment,
+                    "FileName",
+                    "DisplayName",
+                    "Name");
+                if (string.IsNullOrWhiteSpace(fileName))
+                {
+                    continue;
+                }
+
+                result.Add(new DavidAttachmentInfo(
+                    fileName,
+                    ComHelpers.GetFirstString(attachment, "FileType", "ContentType"),
+                    ComHelpers.GetFirstString(attachment, "_Path", "Path"),
+                    ComHelpers.GetFirstLong(attachment, "FileSize", "Size")));
+            }
+
+            return result;
+        }
+    }
+
+    public bool TryCopyAttachment(
+        DavidAttachmentInfo attachment,
+        string directory,
+        out string? copiedPath,
+        out string? error)
+    {
+        copiedPath = null;
+        error = null;
+
+        if (!ComHelpers.TryGetProperty(_item, "Attachments", out var collection) ||
+            collection is null)
+        {
+            error = "David-Item hat keine Attachments-Collection.";
+            return false;
+        }
+
+        var raw = ComHelpers.Enumerate(collection)
+            .FirstOrDefault(candidate =>
+            {
+                var name = ComHelpers.GetFirstString(
+                    candidate,
+                    "FileName",
+                    "DisplayName",
+                    "Name");
+                return string.Equals(name, attachment.FileName, StringComparison.OrdinalIgnoreCase);
+            });
+
+        if (raw is null)
+        {
+            error = $"Anhang '{attachment.FileName}' nicht gefunden.";
+            return false;
+        }
+
+        Directory.CreateDirectory(directory);
+        var fileName = SanitizeFileName(attachment.FileName);
+        var target = Path.Combine(directory, fileName);
+
+        try
+        {
+            ComHelpers.Invoke(raw, "CopyOut", directory, attachment.FileName);
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+
+        if (!File.Exists(target))
+        {
+            try
+            {
+                ComHelpers.Invoke(raw, "CopyOut", target, attachment.FileName);
+            }
+            catch (Exception ex)
+            {
+                error ??= ex.Message;
+            }
+        }
+
+        if (!File.Exists(target) &&
+            !string.IsNullOrWhiteSpace(attachment.SourcePath) &&
+            File.Exists(attachment.SourcePath))
+        {
+            File.Copy(attachment.SourcePath, target, overwrite: true);
+        }
+
+        if (!File.Exists(target))
+        {
+            var found = Directory.GetFiles(directory)
+                .FirstOrDefault(file =>
+                    string.Equals(
+                        Path.GetFileName(file),
+                        fileName,
+                        StringComparison.OrdinalIgnoreCase));
+
+            if (found is not null)
+            {
+                target = found;
+            }
+        }
+
+        if (!File.Exists(target))
+        {
+            error ??= $"CopyOut für '{attachment.FileName}' lieferte keine Datei.";
+            return false;
+        }
+
+        copiedPath = target;
+        error = null;
+        return true;
+    }
+
+    private static string SanitizeFileName(string value)
+    {
+        var invalid = Path.GetInvalidFileNameChars();
+        var builder = new System.Text.StringBuilder(value.Length);
+        foreach (var character in value)
+        {
+            builder.Append(invalid.Contains(character) ? '_' : character);
+        }
+
+        var result = builder.ToString().Trim();
+        return string.IsNullOrWhiteSpace(result) ? "attachment.bin" : result;
+    }
+
     public bool TryExportEml(string path, out string? error)
     {
         return DvApiNative.TryExport(_item, path, out error);
