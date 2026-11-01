@@ -63,7 +63,10 @@ public static class MappingRunner
         }
         if (mapping.Include.Count == 0)
         {
-            mapping.Include.Add("mail");
+            mapping.Include.AddRange(new[]
+            {
+                "mail", "fax", "sms", "voice", "chat", "calendar", "contacts"
+            });
         }
 
         ConfigSaver.Save(config, configPath);

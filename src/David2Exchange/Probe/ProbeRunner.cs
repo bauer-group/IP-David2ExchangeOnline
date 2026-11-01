@@ -332,6 +332,7 @@ public sealed class ProbeRunner
             Id = item.Id,
             Type = type,
             TypeLabel = TypeLabel(type),
+            Kind = TypeLabel(type),
             Subject = item.Subject,
             SizeBytes = sizeBytes,
             AttachmentCount = item.Properties.TryGetValue("AttachmentCount", out var attachmentCount) &&
@@ -365,7 +366,9 @@ public sealed class ProbeRunner
                 sample.IsRead,
                 sample.EmlFile,
                 stagedEmlPath,
-                sample.Properties),
+                sample.Properties,
+                sample.Kind,
+                sample.FolderPath),
             cancellationToken);
     }
 
@@ -397,13 +400,7 @@ public sealed class ProbeRunner
             return type;
         }
 
-        return type switch
-        {
-            "1" => "address",
-            "2" => "mail",
-            "7" => "calendar",
-            _ => $"type:{type}"
-        };
+        return DavidItemTypes.Kind(type);
     }
 
     private static string NormalizeType(string type)
@@ -418,9 +415,13 @@ public sealed class ProbeRunner
 
     private static bool MayExportEml(string type)
     {
-        return type == "2" ||
+        return type is "2" or "3" or "4" or "5" or "6" ||
                type.Contains("mail", StringComparison.OrdinalIgnoreCase) ||
-               type.Contains("email", StringComparison.OrdinalIgnoreCase);
+               type.Contains("email", StringComparison.OrdinalIgnoreCase) ||
+               type.Contains("fax", StringComparison.OrdinalIgnoreCase) ||
+               type.Contains("sms", StringComparison.OrdinalIgnoreCase) ||
+               type.Contains("voice", StringComparison.OrdinalIgnoreCase) ||
+               type.Contains("chat", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsExcluded(IDavidItem item, ProbeOptions options)

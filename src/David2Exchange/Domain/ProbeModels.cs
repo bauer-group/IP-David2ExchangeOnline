@@ -14,6 +14,10 @@ public sealed class DavidItemSample
 
     public string? TypeLabel { get; init; }
 
+    public string Kind { get; init; } = "mail";
+
+    public string FolderPath { get; init; } = "";
+
     public string? Subject { get; init; }
 
     public long? SizeBytes { get; init; }

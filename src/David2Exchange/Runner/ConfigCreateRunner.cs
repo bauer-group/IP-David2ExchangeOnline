@@ -142,7 +142,10 @@ public static class ConfigCreateRunner
                         .ToList() ?? new List<string>(),
                     CreateIfMissing = options.CreateIfMissing
                 },
-                Include = new List<string> { "mail" },
+                Include = new List<string>
+                {
+                    "mail", "fax", "sms", "voice", "chat", "calendar", "contacts"
+                },
                 ExcludeArchives = isCommon
                     ? new List<string> { "ADDRESS", "#001#Adressen" }
                     : new List<string>()

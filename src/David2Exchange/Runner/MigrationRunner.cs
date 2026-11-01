@@ -31,7 +31,7 @@ public sealed class MigrationRunner
             {
                 var archive = session.OpenArchive(mailbox.Source.ArchivePath);
                 var count = 0;
-                foreach (var (item, archivePath) in Walk(archive, mailbox.ExcludeArchives))
+                foreach (var (item, archivePath, folderPath) in Walk(archive, mailbox.ExcludeArchives))
                 {
                     if (limit > 0 && count >= limit)
                     {
@@ -40,7 +40,7 @@ public sealed class MigrationRunner
 
                     if (!options.DryRun)
                     {
-                        var document = ToDocument(mailbox, item, archivePath);
+                        var document = ToDocument(mailbox, item, archivePath, folderPath);
                         manifest.UpsertDiscovered(document);
                     }
 
@@ -170,7 +170,7 @@ public sealed class MigrationRunner
                     try
                     {
                         var archive = session.OpenArchive(mailbox.Source.ArchivePath);
-                        foreach (var (item, archivePath) in Walk(archive, mailbox.ExcludeArchives))
+                        foreach (var (item, archivePath, folderPath) in Walk(archive, mailbox.ExcludeArchives))
                         {
                             var key = BuildKey(mailbox.Id, archivePath, item.Id);
                             if (!pendingKeys.Contains(key))
@@ -183,6 +183,7 @@ public sealed class MigrationRunner
                                 mailbox,
                                 item,
                                 archivePath,
+                                folderPath,
                                 key,
                                 mailboxOutput,
                                 Path.Combine(emlStageRoot, mailbox.Id),
@@ -347,6 +348,7 @@ public sealed class MigrationRunner
         MailboxMapping mailbox,
         IDavidItem item,
         string archivePath,
+        string folderPath,
         string key,
         IOutputTarget output,
         string emlStageDirectory,
@@ -360,36 +362,66 @@ public sealed class MigrationRunner
             return;
         }
 
-        Directory.CreateDirectory(emlStageDirectory);
-        var emlPath = Path.Combine(emlStageDirectory, $"{Sanitize(item.Id)}.eml");
-
-        var needsExport = document.State != ItemState.Exported &&
-                          document.State != ItemState.Importing;
-
-        if (needsExport || !File.Exists(emlPath))
+        var kind = DavidItemTypes.Kind(document.ItemType);
+        if (!DavidItemTypes.IsSupported(document.ItemType))
         {
-            if (!MayExportEml(document.ItemType))
-            {
-                document.State = ItemState.Skipped;
-                document.LastError = $"Typ {document.ItemType} wird in diesem Lauf nicht exportiert.";
-                manifest.Save(document);
-                return;
-            }
+            document.State = ItemState.Skipped;
+            document.LastError = $"Typ {document.ItemType} ({kind}) wird nicht unterstützt.";
+            manifest.Save(document);
+            return;
+        }
 
-            if (!item.TryExportEml(emlPath, out var error))
-            {
-                document.State = ItemState.Failed;
-                document.Attempts++;
-                document.LastError = error;
-                manifest.Save(document);
-                Console.Error.WriteLine($"  FEHLER {item.Id}: {error}");
-                return;
-            }
+        if (!IsIncluded(mailbox, kind))
+        {
+            document.State = ItemState.Skipped;
+            document.LastError = $"Typ '{kind}' ist nicht in include enthalten.";
+            manifest.Save(document);
+            return;
+        }
 
+        var needsEml = DavidItemTypes.IsMailLike(document.ItemType);
+        string? emlPath = null;
+
+        if (needsEml)
+        {
+            Directory.CreateDirectory(emlStageDirectory);
+            emlPath = Path.Combine(emlStageDirectory, $"{Sanitize(item.Id)}.eml");
+
+            var needsExport = document.State != ItemState.Exported &&
+                              document.State != ItemState.Importing;
+
+            if (needsExport || !File.Exists(emlPath))
+            {
+                if (!item.TryExportEml(emlPath, out var error))
+                {
+                    if (DavidItemTypes.IsMailLike(document.ItemType) &&
+                        document.ItemType != "2")
+                    {
+                        WriteSyntheticEml(emlPath, item, mailbox, document.ItemType);
+                    }
+                    else
+                    {
+                        document.State = ItemState.Failed;
+                        document.Attempts++;
+                        document.LastError = error;
+                        manifest.Save(document);
+                        Console.Error.WriteLine($"  FEHLER {item.Id}: {error}");
+                        return;
+                    }
+                }
+
+                document.State = ItemState.Exported;
+                document.StagingPath = emlPath;
+                document.ExportedUtc = DateTime.UtcNow;
+                document.LastError = null;
+                manifest.Save(document);
+            }
+        }
+        else if (document.State == ItemState.Discovered)
+        {
             document.State = ItemState.Exported;
-            document.StagingPath = emlPath;
             document.ExportedUtc = DateTime.UtcNow;
-            document.LastError = null;
+            document.StagingPath = null;
             manifest.Save(document);
         }
 
@@ -402,7 +434,7 @@ public sealed class MigrationRunner
                 archivePath,
                 item.Id,
                 document.ItemType,
-                document.ItemType,
+                kind,
                 item.Subject,
                 item.SizeBytes,
                 item.Properties.TryGetValue("AttachmentCount", out var count) && int.TryParse(count, out var parsed)
@@ -411,9 +443,11 @@ public sealed class MigrationRunner
                 item.ReceivedLocal,
                 item.SentLocal,
                 item.IsRead,
-                Path.Combine("eml", Path.GetFileName(emlPath)),
+                emlPath is null ? null : Path.Combine("eml", Path.GetFileName(emlPath)),
                 emlPath,
-                item.Properties);
+                item.Properties,
+                kind,
+                document.FolderPath ?? string.Empty);
 
             await output.WriteItemAsync(outputItem, cancellationToken);
 
@@ -433,9 +467,10 @@ public sealed class MigrationRunner
         }
     }
 
-    private static IEnumerable<(IDavidItem Item, string ArchivePath)> Walk(
+    private static IEnumerable<(IDavidItem Item, string ArchivePath, string FolderPath)> Walk(
         IDavidArchive archive,
-        IReadOnlyCollection<string> excludeArchives)
+        IReadOnlyCollection<string> excludeArchives,
+        string folderPath = "")
     {
         var path = archive.ResolvedPath;
 
@@ -451,12 +486,16 @@ public sealed class MigrationRunner
                            !string.IsNullOrWhiteSpace(value)
                 ? value
                 : path;
-            yield return (item, itemPath);
+            yield return (item, itemPath, folderPath);
         }
 
         foreach (var subArchive in archive.SubArchives)
         {
-            foreach (var entry in Walk(subArchive, excludeArchives))
+            var subFolder = string.IsNullOrWhiteSpace(folderPath)
+                ? subArchive.Name
+                : folderPath.TrimEnd('/') + "/" + subArchive.Name;
+
+            foreach (var entry in Walk(subArchive, excludeArchives, subFolder))
             {
                 yield return entry;
             }
@@ -466,7 +505,8 @@ public sealed class MigrationRunner
     private static ItemDocument ToDocument(
         MailboxMapping mailbox,
         IDavidItem item,
-        string archivePath)
+        string archivePath,
+        string folderPath)
     {
         var type = string.IsNullOrWhiteSpace(item.Type) ? "unknown" : item.Type.Trim();
         return new ItemDocument
@@ -474,6 +514,7 @@ public sealed class MigrationRunner
             Key = BuildKey(mailbox.Id, archivePath, item.Id),
             MailboxId = mailbox.Id,
             ArchivePath = archivePath,
+            FolderPath = folderPath,
             DavidId = item.Id,
             ItemType = type,
             Subject = item.Subject,
@@ -486,15 +527,71 @@ public sealed class MigrationRunner
         };
     }
 
+    private static bool IsIncluded(MailboxMapping mailbox, string kind)
+    {
+        if (mailbox.Include.Count == 0 ||
+            mailbox.Include.Any(value => value.Equals("all", StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
+        return mailbox.Include.Any(value =>
+            value.Equals(kind, StringComparison.OrdinalIgnoreCase) ||
+            value.Equals(kind + "s", StringComparison.OrdinalIgnoreCase));
+    }
+
     private static string BuildKey(string mailboxId, string archivePath, string davidId)
     {
         return $"{mailboxId}|{archivePath}|{davidId}";
     }
 
-    private static bool MayExportEml(string type)
+    private static void WriteSyntheticEml(
+        string path,
+        IDavidItem item,
+        MailboxMapping mailbox,
+        string type)
     {
-        return type == "2" ||
-               type.Contains("mail", StringComparison.OrdinalIgnoreCase);
+        string Get(string key) =>
+            item.Properties.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value)
+                ? value
+                : "";
+
+        var kind = DavidItemTypes.Kind(type);
+        var from = Get("From");
+        if (string.IsNullOrWhiteSpace(from))
+        {
+            from = "david2exchange@david.local";
+        }
+
+        var to = mailbox.Target.Upn;
+        var subject = item.Subject ?? $"[David {kind}] {item.Id}";
+        var body = Get("BodyText");
+        var date = item.ReceivedLocal ?? DateTime.Now;
+
+        var builder = new StringBuilder();
+        builder.AppendLine($"From: {SanitizeHeader(from)}");
+        builder.AppendLine($"To: {SanitizeHeader(to)}");
+        builder.AppendLine($"Subject: {SanitizeHeader(subject)}");
+        builder.AppendLine($"Date: {date:r}");
+        builder.AppendLine($"Message-ID: <david-{Sanitize(item.Id)}@{mailbox.Id}.david.local>");
+        builder.AppendLine("MIME-Version: 1.0");
+        builder.AppendLine("Content-Type: text/plain; charset=utf-8");
+        builder.AppendLine($"X-David-Type: {kind}");
+        builder.AppendLine($"X-David-Item-ID: {SanitizeHeader(item.Id)}");
+        builder.AppendLine();
+        builder.AppendLine(body);
+        builder.AppendLine();
+        builder.AppendLine("[Migriert aus David. Originalformat konnte nicht als EML exportiert werden.]");
+
+        File.WriteAllText(path, builder.ToString(), new UTF8Encoding(false));
+    }
+
+    private static string SanitizeHeader(string value)
+    {
+        return value
+            .Replace("\r", " ", StringComparison.Ordinal)
+            .Replace("\n", " ", StringComparison.Ordinal)
+            .Trim();
     }
 
     private static string Sanitize(string value)

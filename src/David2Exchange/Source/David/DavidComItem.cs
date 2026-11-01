@@ -14,7 +14,12 @@ internal sealed class DavidComItem : IDavidItem
         "StatusTime", "ReceivedDate", "Received", "Date", "Empfangsdatum", "Time", "Created",
         "SendTime", "SentDate", "SendDate", "Sent", "Gesendet",
         "Viewed", "Read", "IsRead", "Gelesen",
-        "Flags", "Attachments", "From", "To", "CC", "Folder", "Archive"
+        "Flags", "Attachments", "From", "To", "CC", "Folder", "Archive",
+        "BodyText", "TextSource",
+        "StartTime", "StopTime", "Location", "AllDayEvent", "IsRecurring",
+        "Attendees", "Recipients", "VCard",
+        "DisplayName", "FirstName", "LastName", "CompanyName", "Department",
+        "JobTitle", "FileAs", "EMail", "Email", "PhoneNumber", "FaxNumber", "SMSNumber"
     };
 
     private readonly object _item;
@@ -55,6 +60,43 @@ internal sealed class DavidComItem : IDavidItem
         return DvApiNative.TryExport(_item, path, out error);
     }
 
+    private static string? ResolveFormattedText(object? value)
+    {
+        if (value is null)
+        {
+            return null;
+        }
+
+        var text = ComHelpers.GetFirstString(value, "Text", "HTML", "Html", "Plain");
+        if (!string.IsNullOrWhiteSpace(text))
+        {
+            return text;
+        }
+
+        var scalar = ComHelpers.ToScalarString(value);
+        return scalar == "System.__ComObject" ? null : scalar;
+    }
+
+    private static string? ResolveAddressList(object? value)
+    {
+        if (value is null)
+        {
+            return null;
+        }
+
+        var addresses = new List<string>();
+        foreach (var address in ComHelpers.Enumerate(value))
+        {
+            var resolved = ResolveAddress(address);
+            if (!string.IsNullOrWhiteSpace(resolved))
+            {
+                addresses.Add(resolved);
+            }
+        }
+
+        return addresses.Count == 0 ? null : string.Join("; ", addresses);
+    }
+
     private static string? ResolveAddress(object? value)
     {
         if (value is null)
@@ -83,9 +125,13 @@ internal sealed class DavidComItem : IDavidItem
                 continue;
             }
 
-            var text = name is "From" or "To" or "CC"
-                ? ResolveAddress(value)
-                : ComHelpers.ToScalarString(value);
+            var text = name switch
+            {
+                "From" or "To" or "CC" => ResolveAddress(value),
+                "Attendees" or "Recipients" => ResolveAddressList(value),
+                "BodyText" => ResolveFormattedText(value),
+                _ => ComHelpers.ToScalarString(value)
+            };
 
             if (string.IsNullOrWhiteSpace(text) || text == "System.__ComObject")
             {

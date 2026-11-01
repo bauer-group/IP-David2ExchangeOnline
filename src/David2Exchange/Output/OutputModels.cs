@@ -29,7 +29,9 @@ public sealed record OutputItem(
     bool? IsRead,
     string? EmlFile,
     [property: JsonIgnore] string? StagedEmlPath,
-    IReadOnlyDictionary<string, string?> Properties);
+    IReadOnlyDictionary<string, string?> Properties,
+    string Kind = "mail",
+    string FolderPath = "");
 
 public sealed record OutputSummary(
     int Items,

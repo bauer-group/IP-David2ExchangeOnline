@@ -10,6 +10,7 @@ public sealed class ItemDocument
 
     public string MailboxId { get; set; } = "";
     public string ArchivePath { get; set; } = "";
+    public string FolderPath { get; set; } = "";
     public string DavidId { get; set; } = "";
     public string ItemType { get; set; } = "";
     public string? Subject { get; set; }
