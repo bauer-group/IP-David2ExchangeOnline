@@ -394,6 +394,40 @@ public sealed class MigrationRunner
             {
                 if (!item.TryExportEml(emlPath, out var error))
                 {
+                    // Fax muss als vollständige David-EML inkl. aller Header
+                    // exportiert werden. Eine synthetische Text-EML wäre keine
+                    // Faxnachricht und wird deshalb bewusst nicht erzeugt.
+                    if (document.ItemType == "3")
+                    {
+                        // Fax bevorzugt als vollständige David-EML. Nur wenn
+                        // das nicht geht, wird aus dem Original-Faxbild eine
+                        // Multipart-EML gebaut – niemals eine reine Text-EML.
+                        if (item.Attachments.Count > 0 &&
+                            WriteSyntheticEml(
+                                emlPath,
+                                item,
+                                mailbox,
+                                document.ItemType,
+                                emlStageDirectory,
+                                out var faxError))
+                        {
+                            // Faxbild wurde als Anhang übernommen.
+                        }
+                        else
+                        {
+                            document.State = ItemState.Failed;
+                            document.Attempts++;
+                            document.LastError =
+                                $"Fax-EML-Export fehlgeschlagen: {error}. " +
+                                "Kein Faxbild-Anhang für eine Konvertierung vorhanden " +
+                                "oder Anhang konnte nicht kopiert werden.";
+                            manifest.Save(document);
+                            Console.Error.WriteLine(
+                                $"  FEHLER {item.Id}: Fax konnte nicht als EML/Anhang exportiert werden.");
+                            return;
+                        }
+                    }
+
                     if (DavidItemTypes.IsMailLike(document.ItemType) &&
                         document.ItemType != "2")
                     {
