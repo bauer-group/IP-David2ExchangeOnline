@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.3.5](https://github.com/bauer-group/IP-David2Exchange/compare/v0.3.4...v0.3.5) (2026-11-01)
+
+### 🐛 Bug Fixes
+
+* **migration:** prefer David EML for SMS, chat and voice ([05fefa3](https://github.com/bauer-group/IP-David2Exchange/commit/05fefa34a3f0015873a2f9c78a8b0380543b37bf))
+
 ## [0.3.4](https://github.com/bauer-group/IP-David2Exchange/compare/v0.3.3...v0.3.4) (2026-11-01)
 
 ### 🐛 Bug Fixes
