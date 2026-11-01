@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.3.4](https://github.com/bauer-group/IP-David2Exchange/compare/v0.3.3...v0.3.4) (2026-11-01)
+
+### 🐛 Bug Fixes
+
+* **ews:** resolve standard folders by archive type and WellKnownFolderName ([f77295a](https://github.com/bauer-group/IP-David2Exchange/commit/f77295aa632584033c48a30ca31d4adca09c17d5))
+
 ## [0.3.3](https://github.com/bauer-group/IP-David2Exchange/compare/v0.3.2...v0.3.3) (2026-11-01)
 
 ### 🐛 Bug Fixes
