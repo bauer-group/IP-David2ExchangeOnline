@@ -40,9 +40,9 @@ public sealed class EwsOutputTarget : IOutputTarget
     private readonly EwsOutputOptions _options;
     private readonly Dictionary<string, Folder> _folderCache =
         new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<WellKnownFolderName, Folder> _wellKnownFolders = new();
 
     private ExchangeService? _service;
-    private Folder? _rootFolder;
     private int _written;
     private int _alreadyPresent;
 
@@ -81,20 +81,19 @@ public sealed class EwsOutputTarget : IOutputTarget
         service.HttpHeaders["X-AnchorMailbox"] = _options.TargetUpn;
         service.UserAgent = "david2exchange/0.2";
         _service = service;
-        _rootFolder = await EnsureFolderAsync(service, _options.FolderName, cancellationToken);
 
         Console.WriteLine(
-            $"  EWS verbunden: {_options.TargetUpn} · Zielordner '{_options.FolderName}'");
+            $"  EWS verbunden: {_options.TargetUpn} · Ziel: bestehende Ordner (Inbox, Sent Items, Kalender, Kontakte)");
     }
 
     public async Task WriteItemAsync(OutputItem item, CancellationToken cancellationToken)
     {
-        if (_service is null || _rootFolder is null)
+        if (_service is null)
         {
             throw new InvalidOperationException("EwsOutputTarget wurde nicht geöffnet.");
         }
 
-        var folder = await GetFolderAsync(item.FolderPath, cancellationToken);
+        var folder = await GetTargetFolderAsync(item, cancellationToken);
 
         switch (item.Kind)
         {
@@ -289,37 +288,83 @@ public sealed class EwsOutputTarget : IOutputTarget
         _written++;
     }
 
-    private async Task<Folder> GetFolderAsync(string folderPath, CancellationToken cancellationToken)
+    private async Task<Folder> GetTargetFolderAsync(
+        OutputItem item,
+        CancellationToken cancellationToken)
     {
-        if (_service is null || _rootFolder is null)
+        var segments = SanitizeSegments(item.FolderPath);
+
+        if (item.Kind == "calendar")
+        {
+            var calendar = await BindWellKnownAsync(
+                WellKnownFolderName.Calendar,
+                cancellationToken);
+            return await EnsureSubfoldersAsync(
+                calendar,
+                RemoveRoot(segments, "cal", "calendar", "kalender"),
+                "calendar",
+                cancellationToken);
+        }
+
+        if (item.Kind == "contact")
+        {
+            var contacts = await BindWellKnownAsync(
+                WellKnownFolderName.Contacts,
+                cancellationToken);
+            return await EnsureSubfoldersAsync(
+                contacts,
+                RemoveRoot(segments, "address", "addresses", "contacts", "adressen", "kontakte"),
+                "contacts",
+                cancellationToken);
+        }
+
+        var inbox = await BindWellKnownAsync(
+            WellKnownFolderName.Inbox,
+            cancellationToken);
+
+        if (segments.Count == 0)
+        {
+            return inbox;
+        }
+
+        if (TryMapMailRoot(segments[0], out var mapped))
+        {
+            var root = await BindWellKnownAsync(mapped, cancellationToken);
+            return await EnsureSubfoldersAsync(
+                root,
+                segments.Skip(1).ToList(),
+                mapped.ToString(),
+                cancellationToken);
+        }
+
+        // Unbekannte David-Wurzel (z. B. Unverteilt): unter Inbox einsortieren.
+        return await EnsureSubfoldersAsync(
+            inbox,
+            segments,
+            "Inbox",
+            cancellationToken);
+    }
+
+    private async Task<Folder> EnsureSubfoldersAsync(
+        Folder root,
+        IReadOnlyList<string> segments,
+        string cachePrefix,
+        CancellationToken cancellationToken)
+    {
+        if (_service is null)
         {
             throw new InvalidOperationException("EwsOutputTarget wurde nicht geöffnet.");
         }
 
-        if (string.IsNullOrWhiteSpace(folderPath))
+        var current = root;
+        var accumulated = cachePrefix;
+
+        foreach (var segment in segments)
         {
-            return _rootFolder;
-        }
-
-        var normalized = folderPath.Replace('\\', '/').Trim('/');
-        if (_folderCache.TryGetValue(normalized, out var cached))
-        {
-            return cached;
-        }
-
-        var current = _rootFolder;
-        var accumulated = "";
-
-        foreach (var rawSegment in normalized.Split('/', StringSplitOptions.RemoveEmptyEntries))
-        {
-            var segment = SanitizeFolderName(rawSegment);
-            accumulated = string.IsNullOrEmpty(accumulated)
-                ? segment
-                : accumulated + "/" + segment;
-
-            if (_folderCache.TryGetValue(accumulated, out var existing))
+            accumulated += "/" + segment;
+            if (_folderCache.TryGetValue(accumulated, out var cached))
             {
-                current = existing;
+                current = cached;
                 continue;
             }
 
@@ -343,6 +388,100 @@ public sealed class EwsOutputTarget : IOutputTarget
         }
 
         return current;
+    }
+
+    private async Task<Folder> BindWellKnownAsync(
+        WellKnownFolderName name,
+        CancellationToken cancellationToken)
+    {
+        if (_service is null)
+        {
+            throw new InvalidOperationException("EwsOutputTarget wurde nicht geöffnet.");
+        }
+
+        if (_wellKnownFolders.TryGetValue(name, out var cached))
+        {
+            return cached;
+        }
+
+        var folder = await Folder.Bind(_service, name);
+        _wellKnownFolders[name] = folder;
+        return folder;
+    }
+
+    private static List<string> SanitizeSegments(string folderPath)
+    {
+        return folderPath
+            .Replace('\\', '/')
+            .Split('/', StringSplitOptions.RemoveEmptyEntries)
+            .Select(SanitizeFolderName)
+            .ToList();
+    }
+
+    private static List<string> RemoveRoot(List<string> segments, params string[] roots)
+    {
+        if (segments.Count == 0)
+        {
+            return segments;
+        }
+
+        return roots.Any(root => segments[0].Equals(root, StringComparison.OrdinalIgnoreCase))
+            ? segments.Skip(1).ToList()
+            : segments;
+    }
+
+    private static bool TryMapMailRoot(string segment, out WellKnownFolderName folder)
+    {
+        switch (segment.ToLowerInvariant())
+        {
+            case "in":
+            case "inbox":
+            case "eingang":
+                folder = WellKnownFolderName.Inbox;
+                return true;
+            case "out":
+            case "sent":
+            case "sentitems":
+            case "ausgang":
+            case "gesendet":
+                folder = WellKnownFolderName.SentItems;
+                return true;
+            case "draft":
+            case "drafts":
+            case "entwurf":
+            case "entwürfe":
+                folder = WellKnownFolderName.Drafts;
+                return true;
+            case "trash":
+            case "deleted":
+            case "gelöscht":
+            case "papierkorb":
+                folder = WellKnownFolderName.DeletedItems;
+                return true;
+            case "spam":
+            case "junk":
+                folder = WellKnownFolderName.JunkEmail;
+                return true;
+            case "cal":
+            case "calendar":
+            case "kalender":
+                folder = WellKnownFolderName.Calendar;
+                return true;
+            case "address":
+            case "contacts":
+            case "adressen":
+            case "kontakte":
+                folder = WellKnownFolderName.Contacts;
+                return true;
+            case "todo":
+            case "tasks":
+            case "aufgaben":
+                folder = WellKnownFolderName.Tasks;
+                return true;
+            default:
+                folder = WellKnownFolderName.Inbox;
+                return false;
+        }
     }
 
     private async Task<bool> ExistsByItemKeyAsync(
@@ -471,7 +610,7 @@ public sealed class EwsOutputTarget : IOutputTarget
     public ValueTask DisposeAsync()
     {
         _folderCache.Clear();
-        _rootFolder = null;
+        _wellKnownFolders.Clear();
         _service = null;
         return ValueTask.CompletedTask;
     }
@@ -496,23 +635,5 @@ public sealed class EwsOutputTarget : IOutputTarget
         return certificates[0];
     }
 
-    private static async Task<Folder> EnsureFolderAsync(
-        ExchangeService service,
-        string folderName,
-        CancellationToken cancellationToken)
-    {
-        var root = await Folder.Bind(service, WellKnownFolderName.MsgFolderRoot);
-        var filter = new SearchFilter.IsEqualTo(FolderSchema.DisplayName, folderName);
-        var view = new FolderView(10) { Traversal = FolderTraversal.Shallow };
 
-        var found = await service.FindFolders(root.Id, filter, view);
-        if (found.Folders.Count > 0)
-        {
-            return found.Folders[0];
-        }
-
-        var folder = new Folder(service) { DisplayName = folderName };
-        await folder.Save(root.Id);
-        return folder;
-    }
 }

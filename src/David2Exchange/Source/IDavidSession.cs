@@ -29,6 +29,9 @@ public interface IDavidArchive
 
     string Name { get; }
 
+    /// <summary>Technischer David-Ordnername, z. B. in, out, cal, address.</summary>
+    string FolderKey { get; }
+
     int? DeclaredItemCount { get; }
 
     IEnumerable<IDavidArchive> SubArchives { get; }

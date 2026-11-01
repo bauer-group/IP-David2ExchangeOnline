@@ -491,9 +491,17 @@ public sealed class MigrationRunner
 
         foreach (var subArchive in archive.SubArchives)
         {
+            var segment = string.IsNullOrWhiteSpace(folderPath)
+                ? subArchive.FolderKey
+                : subArchive.Name;
+            if (string.IsNullOrWhiteSpace(segment))
+            {
+                segment = subArchive.Name;
+            }
+
             var subFolder = string.IsNullOrWhiteSpace(folderPath)
-                ? subArchive.Name
-                : folderPath.TrimEnd('/') + "/" + subArchive.Name;
+                ? segment
+                : folderPath.TrimEnd('/') + "/" + segment;
 
             foreach (var entry in Walk(subArchive, excludeArchives, subFolder))
             {
