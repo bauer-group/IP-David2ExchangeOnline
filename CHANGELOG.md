@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.3.2](https://github.com/bauer-group/IP-David2Exchange/compare/v0.3.1...v0.3.2) (2026-11-01)
+
+### 🐛 Bug Fixes
+
+* **voice:** preserve original WAV attachments in synthetic EML ([2a9172f](https://github.com/bauer-group/IP-David2Exchange/commit/2a9172fe8dfa05679ac3a968f2557c3a789228ec))
+
 ## [0.3.1](https://github.com/bauer-group/IP-David2Exchange/compare/v0.3.0...v0.3.1) (2026-11-01)
 
 ### 🐛 Bug Fixes
