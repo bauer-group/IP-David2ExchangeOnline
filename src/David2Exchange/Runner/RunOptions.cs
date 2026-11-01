@@ -9,7 +9,8 @@ public sealed class RunOptions
 
     public string? Wave { get; set; }
 
-    public int Limit { get; set; }
+    /// <summary>-1 = use limits.limit from migration.yaml; 0 = all.</summary>
+    public int Limit { get; set; } = -1;
 
     public bool Newest { get; set; } = true;
 

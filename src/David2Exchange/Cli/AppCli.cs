@@ -581,6 +581,9 @@ public static class AppCli
                 case "--limit":
                     options.Limit = ParseInt(NextValue(args, ref i, "--limit"), "--limit", 0);
                     break;
+                case "--all":
+                    options.Limit = 0;
+                    break;
                 case "--newest":
                     options.Newest = true;
                     break;
@@ -605,8 +608,8 @@ public static class AppCli
                 case "-h":
                     Console.WriteLine(
                         """
-                        david2exchange discover --config <yaml> [--mailbox <id>] [--limit N]
-                        david2exchange run      --config <yaml> [--mailbox <id>] [--limit N]
+                        david2exchange discover --config <yaml> [--mailbox <id>] [--wave <name>] [--limit N|--all]
+                        david2exchange run      --config <yaml> [--mailbox <id>] [--wave <name>] [--limit N|--all]
                                                 [--newest|--oldest] [--dry-run] [--output local|ews]
                         david2exchange verify   --config <yaml> [--mailbox <id>] [--wave <name>]
                         david2exchange report   --config <yaml> [--mailbox <id>] [--out report.html]
@@ -679,8 +682,8 @@ public static class AppCli
               david2exchange sources --config <yaml> [--json]
               david2exchange targets [--json]
               david2exchange map --config <yaml> [--list | --source <p> --target <upn> --id <id>]
-              david2exchange discover --config <yaml> [--limit N]
-              david2exchange run --config <yaml> [--limit N] [--dry-run] [--output local|ews]
+              david2exchange discover --config <yaml> [--limit N|--all]
+              david2exchange run --config <yaml> [--limit N|--all] [--dry-run] [--output local|ews]
               david2exchange report --config <yaml>
               david2exchange probe [Optionen]     David-COM testen, Objekte lokal schreiben
               david2exchange version              Version und Prozessbitbreite

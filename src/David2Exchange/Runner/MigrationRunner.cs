@@ -25,13 +25,15 @@ public sealed class MigrationRunner
             using IDavidSession session = new DavidComSession(config.David.ProgId);
             session.Logon(config.David.Logon);
 
+            var limit = options.Limit >= 0 ? options.Limit : config.Limits.Limit;
+
             foreach (var mailbox in SelectMailboxes(config, options.MailboxId, options.Wave))
             {
                 var archive = session.OpenArchive(mailbox.Source.ArchivePath);
                 var count = 0;
                 foreach (var (item, archivePath) in Walk(archive, mailbox.ExcludeArchives))
                 {
-                    if (options.Limit > 0 && count >= options.Limit)
+                    if (limit > 0 && count >= limit)
                     {
                         break;
                     }
@@ -68,12 +70,14 @@ public sealed class MigrationRunner
                          (string.IsNullOrWhiteSpace(config.M365.TenantId) ? "local" : "ews");
         config.Validate(requireM365: outputKind.Equals("ews", StringComparison.OrdinalIgnoreCase));
 
+        var effectiveLimit = options.Limit >= 0 ? options.Limit : config.Limits.Limit;
+
         var discover = new RunOptions
         {
             ConfigPath = options.ConfigPath,
             MailboxId = options.MailboxId,
             Wave = options.Wave,
-            Limit = options.Limit,
+            Limit = effectiveLimit,
             DiscoverOnly = true,
             DryRun = options.DryRun
         };
@@ -103,8 +107,8 @@ public sealed class MigrationRunner
                 .GetPending(options.MailboxId, 0, options.Newest)
                 .Where(item => selectedIds.Contains(item.MailboxId));
 
-            var pending = options.Limit > 0
-                ? pendingQuery.Take(options.Limit).ToList()
+            var pending = effectiveLimit > 0
+                ? pendingQuery.Take(effectiveLimit).ToList()
                 : pendingQuery.ToList();
 
             if (pending.Count == 0)
