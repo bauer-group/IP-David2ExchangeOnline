@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.3.0](https://github.com/bauer-group/IP-David2Exchange/compare/v0.2.2...v0.3.0) (2026-11-01)
+
+### 🚀 Features
+
+* **migration:** support fax, sms, voice, chat, calendar, contacts and folders ([ffba0f1](https://github.com/bauer-group/IP-David2Exchange/commit/ffba0f19f11b8f57d222eff485f7f4b82a97f333))
+
 ## [0.2.2](https://github.com/bauer-group/IP-David2Exchange/compare/v0.2.1...v0.2.2) (2026-11-01)
 
 ### 🐛 Bug Fixes
