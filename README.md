@@ -2,7 +2,7 @@
 
 Tobit David → Exchange Online migration tool for Windows x86. The tool runs on a workstation with the David client installed; it is not installed as a service.
 
-**Current status:** mail, fax, SMS, voice, chat, calendar, contacts and David folder hierarchy are implemented. Mail/fax/SMS/voice/chat use EML (with a synthetic EML fallback for non-mail); calendar becomes an EWS appointment, contacts become EWS contacts. Messages are written into the existing target folders (`Inbox`, `Sent Items`, `Drafts`, `Deleted Items`, `Junk Email`, `Calendar`, `Contacts`, `Tasks`) and their subfolders. The David export path has been tested against a real server; the EWS path still needs a tenant end-to-end test. See [Supported content](#supported-content).
+**Current status:** mail, fax, SMS, voice, chat, calendar, contacts and David folder hierarchy are implemented. Mail/fax/SMS/voice/chat use EML (Fax prefers David's full EML export and falls back to an original-image multipart EML; SMS/voice/chat have an attachment-preserving fallback); calendar becomes an EWS appointment, contacts become EWS contacts. Messages are written into the existing target folders (`Inbox`, `Sent Items`, `Drafts`, `Deleted Items`, `Junk Email`, `Calendar`, `Contacts`, `Tasks`) and their subfolders. The David export path has been tested against a real server; the EWS path still needs a tenant end-to-end test. See [Supported content](#supported-content).
 
 ## 1. Get the executable
 
@@ -104,7 +104,7 @@ Relative paths in `migration.yaml` resolve from the config folder. The default c
 | David content | Detection / probe | Migration | Notes |
 |---|---|---|---|
 | E-mails | yes | **yes** | EML, MIME, original Message-ID, sent/received date, read state |
-| Fax | yes | yes | EML if David exports it; otherwise synthetic EML with image attachment |
+| Fax | yes | yes | **preferred:** complete David EML incl. all headers. Fallback: multipart EML with the original fax image attachment – never a text-only EML. If neither is possible, the item fails visibly. |
 | SMS | yes | yes | EML/synthetic text EML |
 | Chat | yes | yes | EML/synthetic text EML |
 | Voice | yes | yes | EML with the original WAV attachment; **no transcription is generated** |
