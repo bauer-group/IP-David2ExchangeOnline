@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.9.10](https://github.com/bauer-group/IP-David2Exchange/compare/v0.9.9...v0.9.10) (2026-11-02)
+
+### ♻️ Code Refactoring
+
+* **migration:** export to LiteDB then import via 10-item queue ([4a25458](https://github.com/bauer-group/IP-David2Exchange/commit/4a254580f5610f225363781ad1364612585486bc))
+
 ## [0.9.9](https://github.com/bauer-group/IP-David2Exchange/compare/v0.9.8...v0.9.9) (2026-11-02)
 
 ### 🐛 Bug Fixes
