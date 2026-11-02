@@ -143,6 +143,27 @@ Fax images: for **unpacked** David archives, `FaxItem.Image` is a real TIFF path
 
 Unsupported items are **not silently dropped**: they are written to the manifest as `skipped` with `last_error`/reason and appear in the report. See [docs/CONFIG.md](docs/CONFIG.md) for `include` and reporting.
 
+### Faxe: Archive vorher entpacken
+
+Gepackte David-Archive liefern für Faxe nur einen internen Containerpfad, keine lesbare TIFF-Datei. Vor der Faxmigration:
+
+```powershell
+# 1. Nur anzeigen
+.\david2exchange.exe unpack --config migration.yaml --dry-run
+
+# 2. BundleFiles=0 für COMMON und alle USER-Archive setzen
+.\david2exchange.exe unpack --config migration.yaml
+```
+
+3. **David-Datenbereinigung/Archiv-Optimierung durch den David-Administrator starten.**
+4. Erst danach migrieren:
+
+```powershell
+.\david2exchange.exe run --config migration.yaml --wave wave-1 --all --output ews
+```
+
+`unpack` setzt nur `archive.Options.BundleFiles = 0` und speichert das Archiv. Die tatsächliche Entpackung passiert erst durch die David-Bereinigung. Details: [docs/UNPACK.md](docs/UNPACK.md).
+
 ### Folder mapping
 
 | David archive root | Exchange folder |

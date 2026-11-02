@@ -132,7 +132,7 @@ mailboxes:
 - **`include`:** steuert die Typen. `mail`, `fax`, `sms`, `voice`, `chat`, `calendar`, `contacts` oder `all`. Fehlt der Typ, wird das Item bewusst als `skipped` geführt.
 - **EML-Präferenz:** Mail, Fax, SMS, Chat und Voice werden zuerst über `DVEmlFromMailItem` als originale David-EML exportiert. Nur wenn das fehlschlägt, greift der typabhängige Fallback. Bei Mail werden dabei Header, Text und Anhänge in eine generische EML geschrieben, statt das Item fehlschlagen zu lassen.
 - **Voice:** wird als Mail mit der Original-WAV-Datei als Anhang migriert. Es wird **keine Transkription** erzeugt.
-- **Fax:** bevorzugt den vollständigen David-EML-Export inkl. aller Header. Ist der nicht verfügbar, wird eine Multipart-EML mit dem Original-Faxbild als Anhang erzeugt – niemals eine reine Text-EML. Fehlt auch der Faxbild-Anhang, bleibt das Item als `failed` sichtbar.
+- **Fax:** bevorzugt den vollständigen David-EML-Export inkl. aller Header. Ist der nicht verfügbar, wird eine Multipart-EML mit dem Original-Faxbild als Anhang erzeugt – niemals eine reine Text-EML. Fehlt auch der Faxbild-Anhang, bleibt das Item als `failed` sichtbar. Vorher Archive mit `david2exchange unpack` entpacken und die David-Bereinigung laufen lassen; siehe [UNPACK.md](UNPACK.md).
 - **Mehrere Quellen auf ein Ziel:** erlaubt; `id` muss eindeutig sein.
 - **Typen:** 1 = Adresse/Kontakt, 2 = Mail, 7 = Kalender (auf SRV-BAUER beobachtet). Der Lokal-Export schreibt derzeit Mail (Typ 2).
 
