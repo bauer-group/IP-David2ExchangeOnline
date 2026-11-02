@@ -131,7 +131,7 @@ Fax images: for **unpacked** David archives, `FaxItem.Image` is a real TIFF path
 | David content | Detection / probe | Migration | Notes |
 |---|---|---|---|
 | E-mails | yes | **yes** | David EML preferred; revision-safe HTML/plain fallback with attachments if David export fails |
-| Fax | yes | yes | Unpacked archive: original TIFF from `FaxItem.Image` as `fax.tif`. Packed archive: fails visibly; no text-only EML. |
+| Fax | yes | yes | Unpacked archive: TIFF from `FaxItem.Image` converted to a multi-page PDF (`fax-<nummer>-<datum>.pdf`); subject uses fax number when David has no subject. Packed archive: fails visibly; no text-only EML. |
 | SMS | yes | yes | Attachment-preserving EML fallback; no native `DVEmlFromMailItem` call |
 | Chat | yes | yes | Attachment-preserving EML fallback; no native `DVEmlFromMailItem` call |
 | Voice | yes | yes | EML with the original WAV attachment; **no transcription** |
