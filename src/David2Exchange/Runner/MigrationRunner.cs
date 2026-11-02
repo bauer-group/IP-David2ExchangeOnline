@@ -130,15 +130,13 @@ public sealed class MigrationRunner
                 .Select(mailbox => mailbox.Id)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-            var pendingQuery = manifest
-                .GetPending(options.MailboxId, 0, options.Newest)
-                .Where(item => selectedIds.Contains(item.MailboxId));
+            var pendingKeys = manifest
+                .GetPendingKeys(options.MailboxId, effectiveLimit, options.Newest)
+                .Where(key => selectedIds.Any(id =>
+                    key.StartsWith(id + "|", StringComparison.OrdinalIgnoreCase)))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-            var pending = effectiveLimit > 0
-                ? pendingQuery.Take(effectiveLimit).ToList()
-                : pendingQuery.ToList();
-
-            if (pending.Count == 0)
+            if (pendingKeys.Count == 0)
             {
                 Console.WriteLine("Keine offenen Items.");
                 manifest.FinishRun(run);
@@ -146,7 +144,8 @@ public sealed class MigrationRunner
                 return 0;
             }
 
-            Console.WriteLine($"Offene Items: {pending.Count} (Ausgabe: {outputKind})");
+            var pendingCount = pendingKeys.Count;
+            Console.WriteLine($"Offene Items: {pendingCount} (Ausgabe: {outputKind})");
 
             var stagingRoot = ConfigLoader.ResolvePath(config, config.Staging.Root);
             var outputRoot = Path.Combine(stagingRoot, "output");
@@ -164,17 +163,13 @@ public sealed class MigrationRunner
             {
                 foreach (var mailbox in SelectMailboxes(config, options.MailboxId, options.Wave))
                 {
-                    var mailboxPending = pending
-                        .Where(x => x.MailboxId.Equals(mailbox.Id, StringComparison.OrdinalIgnoreCase))
-                        .ToList();
-                    if (mailboxPending.Count == 0)
+                    var mailboxPrefix = mailbox.Id + "|";
+                    var mailboxPendingCount = pendingKeys.Count(key =>
+                        key.StartsWith(mailboxPrefix, StringComparison.OrdinalIgnoreCase));
+                    if (mailboxPendingCount == 0)
                     {
                         continue;
                     }
-
-                    var pendingKeys = mailboxPending
-                        .Select(x => x.Key)
-                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
                     IOutputTarget mailboxOutput = sharedLocalOutput ??
                                                   OutputTargetFactory.Create(new OutputSettings(
@@ -194,6 +189,57 @@ public sealed class MigrationRunner
                     try
                     {
                         var exported = new List<OutputItem>();
+
+                        async Task FlushAsync()
+                        {
+                            if (exported.Count == 0)
+                            {
+                                return;
+                            }
+
+                            foreach (var batch in exported.Chunk(100))
+                            {
+                                var results = await mailboxOutput.WriteBatchAsync(
+                                    batch,
+                                    cancellationToken);
+
+                                foreach (var result in results)
+                                {
+                                    var key = BuildKey(
+                                        mailbox.Id,
+                                        result.Item.ArchivePath,
+                                        result.Item.Id);
+                                    var document = manifest.Get(key);
+                                    if (document is null)
+                                    {
+                                        continue;
+                                    }
+
+                                    if (result.Success)
+                                    {
+                                        document.State = ItemState.Imported;
+                                        document.ImportedUtc = DateTime.UtcNow;
+                                        document.LastError = null;
+                                        manifest.Save(document);
+                                        CleanupStagedItem(result.Item);
+                                        Console.WriteLine(
+                                            $"  OK {result.Item.Id} · {result.Item.Subject}");
+                                    }
+                                    else
+                                    {
+                                        document.State = ItemState.Failed;
+                                        document.Attempts++;
+                                        document.LastError = result.Error;
+                                        manifest.Save(document);
+                                        Console.Error.WriteLine(
+                                            $"  FEHLER {result.Item.Id}: {result.Error}");
+                                    }
+                                }
+                            }
+
+                            exported.Clear();
+                        }
+
                         var archive = session.OpenArchive(mailbox.Source.ArchivePath);
                         foreach (var (item, archivePath, folderPath) in Walk(
                                      archive,
@@ -222,58 +268,27 @@ public sealed class MigrationRunner
                             }
 
                             pendingKeys.Remove(key);
+
+                            // Maximal 80 Items im Speicher halten; 8 Worker × 10er-Batches.
+                            if (exported.Count >= 80)
+                            {
+                                await FlushAsync();
+                            }
+
                             if (pendingKeys.Count == 0)
                             {
                                 break;
                             }
                         }
 
-                        foreach (var batch in exported.Chunk(100))
-                        {
-                            var results = await mailboxOutput.WriteBatchAsync(
-                                batch,
-                                cancellationToken);
-
-                            foreach (var result in results)
-                            {
-                                var key = BuildKey(
-                                    mailbox.Id,
-                                    result.Item.ArchivePath,
-                                    result.Item.Id);
-                                var document = manifest.Get(key);
-                                if (document is null)
-                                {
-                                    continue;
-                                }
-
-                                if (result.Success)
-                                {
-                                    document.State = ItemState.Imported;
-                                    document.ImportedUtc = DateTime.UtcNow;
-                                    document.LastError = null;
-                                    manifest.Save(document);
-                                    CleanupStagedItem(result.Item);
-                                    Console.WriteLine(
-                                        $"  OK {result.Item.Id} · {result.Item.Subject}");
-                                }
-                                else
-                                {
-                                    document.State = ItemState.Failed;
-                                    document.Attempts++;
-                                    document.LastError = result.Error;
-                                    manifest.Save(document);
-                                    Console.Error.WriteLine(
-                                        $"  FEHLER {result.Item.Id}: {result.Error}");
-                                }
-                            }
-                        }
+                        await FlushAsync();
                     }
                     finally
                     {
                         if (sharedLocalOutput is null)
                         {
                             await mailboxOutput.CompleteAsync(
-                                new OutputSummary(mailboxPending.Count, 0, run.StartedUtc, DateTime.UtcNow),
+                                new OutputSummary(mailboxPendingCount, 0, run.StartedUtc, DateTime.UtcNow),
                                 cancellationToken);
                             await mailboxOutput.DisposeAsync();
                         }
@@ -285,7 +300,7 @@ public sealed class MigrationRunner
                 if (sharedLocalOutput is not null)
                 {
                     await sharedLocalOutput.CompleteAsync(
-                        new OutputSummary(pending.Count, 0, run.StartedUtc, DateTime.UtcNow),
+                        new OutputSummary(pendingCount, 0, run.StartedUtc, DateTime.UtcNow),
                         cancellationToken);
                     await sharedLocalOutput.DisposeAsync();
                 }

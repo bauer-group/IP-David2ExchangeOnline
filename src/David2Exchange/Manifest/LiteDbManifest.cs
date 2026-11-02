@@ -95,6 +95,33 @@ public sealed class LiteDbManifest : IDisposable
         return limit > 0 ? ordered.Take(limit).ToList() : ordered.ToList();
     }
 
+    public HashSet<string> GetPendingKeys(
+        string? mailboxId,
+        int limit,
+        bool newest)
+    {
+        var query = _items.Find(x =>
+            x.State == ItemState.Discovered ||
+            x.State == ItemState.Exported ||
+            x.State == ItemState.Importing ||
+            x.State == ItemState.Failed);
+
+        if (!string.IsNullOrWhiteSpace(mailboxId))
+        {
+            query = query.Where(x => x.MailboxId.Equals(mailboxId, StringComparison.OrdinalIgnoreCase));
+        }
+
+        var ordered = newest
+            ? query.OrderByDescending(x => x.ReceivedLocal).ThenBy(x => x.DavidId)
+            : query.OrderBy(x => x.ReceivedLocal).ThenBy(x => x.DavidId);
+
+        var keys = limit > 0
+            ? ordered.Take(limit).Select(x => x.Key)
+            : ordered.Select(x => x.Key);
+
+        return keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
     public IReadOnlyList<ItemDocument> GetAll(string? mailboxId = null)
     {
         return string.IsNullOrWhiteSpace(mailboxId)
