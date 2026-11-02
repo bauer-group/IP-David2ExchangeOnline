@@ -222,7 +222,22 @@ public sealed class EwsOutputTarget : IOutputTarget
         };
 
         appointment.SetExtendedProperty(ItemKeyProperty, BuildItemKey(item));
-        await appointment.Save(folder.Id);
+        try
+        {
+            await appointment.Save(folder.Id);
+        }
+        catch (ServiceResponseException)
+        {
+            var calendarRoot = await BindWellKnownAsync(
+                WellKnownFolderName.Calendar,
+                cancellationToken);
+            if (folder.Id.UniqueId == calendarRoot.Id.UniqueId)
+            {
+                throw;
+            }
+
+            await appointment.Save(calendarRoot.Id);
+        }
 
         _written++;
     }
@@ -283,7 +298,22 @@ public sealed class EwsOutputTarget : IOutputTarget
             string.IsNullOrWhiteSpace(notes) ? "Migriert aus David." : notes);
 
         contact.SetExtendedProperty(ItemKeyProperty, BuildItemKey(item));
-        await contact.Save(folder.Id);
+        try
+        {
+            await contact.Save(folder.Id);
+        }
+        catch (ServiceResponseException)
+        {
+            var contactsRoot = await BindWellKnownAsync(
+                WellKnownFolderName.Contacts,
+                cancellationToken);
+            if (folder.Id.UniqueId == contactsRoot.Id.UniqueId)
+            {
+                throw;
+            }
+
+            await contact.Save(contactsRoot.Id);
+        }
 
         _written++;
     }
@@ -303,7 +333,8 @@ public sealed class EwsOutputTarget : IOutputTarget
                 calendar,
                 RemoveRoot(segments, "cal", "calendar", "kalender"),
                 "calendar",
-                cancellationToken);
+                cancellationToken,
+                "IPF.Appointment");
         }
 
         if (item.Kind == "contact")
@@ -315,7 +346,8 @@ public sealed class EwsOutputTarget : IOutputTarget
                 contacts,
                 RemoveRoot(segments, "address", "addresses", "contacts", "adressen", "kontakte"),
                 "contacts",
-                cancellationToken);
+                cancellationToken,
+                "IPF.Contact");
         }
 
         var inbox = await BindWellKnownAsync(
@@ -349,7 +381,8 @@ public sealed class EwsOutputTarget : IOutputTarget
         Folder root,
         IReadOnlyList<string> segments,
         string cachePrefix,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? folderClass = null)
     {
         if (_service is null)
         {
@@ -380,6 +413,11 @@ public sealed class EwsOutputTarget : IOutputTarget
             else
             {
                 folder = new Folder(_service) { DisplayName = segment };
+                if (!string.IsNullOrWhiteSpace(folderClass))
+                {
+                    folder.FolderClass = folderClass;
+                }
+
                 await folder.Save(current.Id);
             }
 

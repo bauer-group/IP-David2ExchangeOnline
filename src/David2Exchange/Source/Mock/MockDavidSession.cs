@@ -195,6 +195,8 @@ public sealed class MockDavidSession : IDavidSession
 
         public IReadOnlyList<DavidAttachmentInfo> Attachments => Array.Empty<DavidAttachmentInfo>();
 
+        public byte[]? FaxImage => null;
+
         public bool TryCopyAttachment(
             DavidAttachmentInfo attachment,
             string directory,

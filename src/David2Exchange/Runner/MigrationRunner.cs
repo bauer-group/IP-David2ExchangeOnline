@@ -404,47 +404,16 @@ public sealed class MigrationRunner
 
             if (needsExport || !File.Exists(emlPath))
             {
-                if (!item.TryExportEml(emlPath, out var error))
+                // DVEmlFromMailItem ist nur für echte MailItem-Objekte sicher.
+                // Bei Fax/SMS/Voice/Chat kann der native Aufruf mit einer
+                // Access Violation den gesamten Prozess beenden.
+                if (document.ItemType == "2")
                 {
-                    // Fax muss als vollständige David-EML inkl. aller Header
-                    // exportiert werden. Eine synthetische Text-EML wäre keine
-                    // Faxnachricht und wird deshalb bewusst nicht erzeugt.
-                    if (document.ItemType == "3")
-                    {
-                        // Fax bevorzugt als vollständige David-EML. Nur wenn
-                        // das nicht geht, wird aus dem Original-Faxbild eine
-                        // Multipart-EML gebaut – niemals eine reine Text-EML.
-                        if (item.Attachments.Count > 0 &&
-                            WriteSyntheticEml(
-                                emlPath,
-                                item,
-                                mailbox,
-                                document.ItemType,
-                                emlStageDirectory,
-                                out var faxError))
-                        {
-                            // Faxbild wurde als Anhang übernommen.
-                        }
-                        else
-                        {
-                            document.State = ItemState.Failed;
-                            document.Attempts++;
-                            document.LastError =
-                                $"Fax-EML-Export fehlgeschlagen: {error}. " +
-                                "Kein Faxbild-Anhang für eine Konvertierung vorhanden " +
-                                "oder Anhang konnte nicht kopiert werden.";
-                            manifest.Save(document);
-                            Console.Error.WriteLine(
-                                $"  FEHLER {item.Id}: Fax konnte nicht als EML/Anhang exportiert werden.");
-                            return;
-                        }
-                    }
-
-                    else if (DavidItemTypes.IsMailLike(document.ItemType))
+                    if (!item.TryExportEml(emlPath, out var error))
                     {
                         Console.WriteLine(
                             $"  HINWEIS {item.Id}: David-EML nicht verfügbar; " +
-                            $"generiere EML-Fallback für {DavidItemTypes.Kind(document.ItemType)}.");
+                            "generiere EML-Fallback für mail.");
 
                         if (!WriteSyntheticEml(
                                 emlPath,
@@ -462,13 +431,23 @@ public sealed class MigrationRunner
                             return;
                         }
                     }
-                    else
+                }
+                else
+                {
+                    // Fax/SMS/Voice/Chat: kein nativer MailItem-Export.
+                    if (!WriteSyntheticEml(
+                            emlPath,
+                            item,
+                            mailbox,
+                            document.ItemType,
+                            emlStageDirectory,
+                            out var syntheticError))
                     {
                         document.State = ItemState.Failed;
                         document.Attempts++;
-                        document.LastError = error;
+                        document.LastError = syntheticError;
                         manifest.Save(document);
-                        Console.Error.WriteLine($"  FEHLER {item.Id}: {error}");
+                        Console.Error.WriteLine($"  FEHLER {item.Id}: {syntheticError}");
                         return;
                     }
                 }
@@ -646,6 +625,18 @@ public sealed class MigrationRunner
         var date = item.ReceivedLocal ?? DateTime.Now;
 
         var attachments = new List<(string Name, string Path)>();
+        if (type == "3" && item.Attachments.Count == 0 && item.FaxImage is { Length: > 0 } faxImage)
+        {
+            var faxDirectory = Path.Combine(
+                stageDirectory,
+                "attachments",
+                Sanitize(item.Id));
+            Directory.CreateDirectory(faxDirectory);
+            var faxPath = Path.Combine(faxDirectory, "fax.tif");
+            File.WriteAllBytes(faxPath, faxImage);
+            attachments.Add(("fax.tif", faxPath));
+        }
+
         if (item.Attachments.Count > 0)
         {
             var attachmentDirectory = Path.Combine(
@@ -688,6 +679,13 @@ public sealed class MigrationRunner
         builder.AppendLine("MIME-Version: 1.0");
         builder.AppendLine($"X-David-Type: {kind}");
         builder.AppendLine($"X-David-Item-ID: {SanitizeHeader(item.Id)}");
+
+        if (type == "3" && attachments.Count == 0)
+        {
+            error = "Fax enthält kein exportierbares Faxbild (Image/Attachment). " +
+                    "Es wird keine reine Text-EML erzeugt.";
+            return false;
+        }
 
         if (attachments.Count == 0)
         {

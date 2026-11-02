@@ -69,6 +69,8 @@ public interface IDavidItem
 
     IReadOnlyList<DavidAttachmentInfo> Attachments { get; }
 
+    byte[]? FaxImage { get; }
+
     bool TryExportEml(string path, out string? error);
 
     bool TryCopyAttachment(

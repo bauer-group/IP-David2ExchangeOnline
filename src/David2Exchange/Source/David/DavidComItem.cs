@@ -55,6 +55,29 @@ internal sealed class DavidComItem : IDavidItem
 
     public IReadOnlyDictionary<string, string?> Properties { get; }
 
+    public byte[]? FaxImage
+    {
+        get
+        {
+            if (!ComHelpers.TryGetProperty(_item, "Image", out var value) || value is null)
+            {
+                return null;
+            }
+
+            if (value is byte[] bytes)
+            {
+                return bytes;
+            }
+
+            if (value is string path && File.Exists(path))
+            {
+                return File.ReadAllBytes(path);
+            }
+
+            return null;
+        }
+    }
+
     public IReadOnlyList<DavidAttachmentInfo> Attachments
     {
         get
@@ -205,7 +228,14 @@ internal sealed class DavidComItem : IDavidItem
             return null;
         }
 
-        var text = ComHelpers.GetFirstString(value, "Text", "HTML", "Html", "Plain");
+        var text = ComHelpers.GetFirstString(
+            value,
+            "PlainText",
+            "Text",
+            "HTMLText",
+            "HTML",
+            "Html",
+            "Plain");
         if (!string.IsNullOrWhiteSpace(text))
         {
             return text;
