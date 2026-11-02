@@ -181,7 +181,7 @@ Gepackte David-Archive liefern für Faxe nur einen internen Containerpfad, keine
 | `todo` / Aufgaben | Tasks |
 | unknown / Unverteilt | Inbox with the source folder name as subfolder |
 
-Subfolders below these roots are created with the same hierarchy. Root-level David items go to Inbox. The Exchange roots are resolved via **`WellKnownFolderName`** (Inbox, SentItems, Drafts, DeletedItems, JunkEmail, Calendar, Contacts, Tasks), so localized folder display names in the target mailbox do not matter. The mapping uses the numeric `DvArchiveTypes` value, not the localized David folder name.
+Subfolders below these roots are created with the same hierarchy. Root-level David items go to Inbox. The Exchange roots are resolved via **`WellKnownFolderName`** (Inbox, SentItems, Drafts, DeletedItems, JunkEmail, Calendar, Contacts, Tasks), so localized folder display names in the target mailbox do not matter. The mapping uses the numeric `DvArchiveTypes` value and additionally derives the root from the actual `ArchivePath` (`...\Eingang`, `...\Ausgang`), so stale/empty `FolderPath` values cannot move Inbox mail into Sent Items.
 
 ## 5. Delta migration for active mailboxes
 

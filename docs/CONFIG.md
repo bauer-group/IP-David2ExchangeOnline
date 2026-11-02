@@ -130,7 +130,7 @@ mailboxes:
 - **`source.email`:** Pflicht für aktive Benutzerpostfächer; nur diese Adresse wird für das Mapping verwendet.
 - **`target.aliases`:** zusätzliche SMTP-Adressen, die beim Anlegen/Ergänzen gesetzt werden.
 - **`target.createIfMissing`:** nur für Shared Mailboxes automatisch; User-Mailboxes werden nicht automatisch lizenziert.
-- **Zielordner:** Exchange-Spezialordner werden über `WellKnownFolderName` gebunden, nicht über lokalisierte Anzeigenamen. Die David-Quelle wird über den numerischen `DvArchiveTypes`-Wert klassifiziert.
+- **Zielordner:** Exchange-Spezialordner werden über `WellKnownFolderName` gebunden, nicht über lokalisierte Anzeigenamen. Die David-Quelle wird über den numerischen `DvArchiveTypes`-Wert und zusätzlich über den tatsächlichen `ArchivePath` (`...\Eingang`, `...\Ausgang`) klassifiziert.
 - **`include`:** steuert die Typen. `mail`, `fax`, `sms`, `voice`, `chat`, `calendar`, `contacts`, `tasks` oder `all`. Fehlt der Typ, wird das Item bewusst als `skipped` geführt.
 - **EML-Verhalten:** Nur Mail (Typ 2) wird über `DVEmlFromMailItem` als originale David-EML exportiert. Fax/SMS/Chat/Voice werden nicht nativ über diese Funktion exportiert, weil sie keine `MailItem`-Objekte sind und der native Aufruf den Prozess beenden kann. Bei Mail wird bei Fehlschlag eine generische EML mit Headern, Text und Anhängen erzeugt; der Fallback hängt **keinen** Provenienztext an den Body. Liefert David HTML, wird `multipart/alternative` mit `text/plain` und `text/html` erzeugt.
 - **Voice:** wird als Mail mit der Original-WAV-Datei als Anhang migriert. Es wird **keine Transkription** erzeugt.
