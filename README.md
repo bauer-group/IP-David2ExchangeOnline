@@ -228,6 +228,7 @@ Two paths are documented in [docs/SETUP.md](docs/SETUP.md):
 | `run [--dry-run] [--wave] [--limit] [--output local\|ews]` | export/import; initial and delta |
 | `verify [--wave]` | check for open/failed items |
 | `report [--out]` | HTML/JSON report |
+| `unpack [--dry-run]` | mark all COMMON/USER archives as unpacked (`BundleFiles=0`) |
 | `probe` | low-level David/EWS diagnostics |
 
 All commands run from the EXE; `--config` defaults to `migration.yaml` next to the EXE.
