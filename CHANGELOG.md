@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.6.0](https://github.com/bauer-group/IP-David2Exchange/compare/v0.5.3...v0.6.0) (2026-11-02)
+
+### 🚀 Features
+
+* **tasks:** migrate David tasks and preserve HTML bodies ([67f44d6](https://github.com/bauer-group/IP-David2Exchange/commit/67f44d60816badcf193f248e81243d68c1c10a98))
+
 ## [0.5.3](https://github.com/bauer-group/IP-David2Exchange/compare/v0.5.2...v0.5.3) (2026-11-02)
 
 ### 🐛 Bug Fixes
