@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.5.3](https://github.com/bauer-group/IP-David2Exchange/compare/v0.5.2...v0.5.3) (2026-11-02)
+
+### 🐛 Bug Fixes
+
+* **mail:** preserve HTML body in synthetic EML fallback ([6074042](https://github.com/bauer-group/IP-David2Exchange/commit/6074042f25c5fd0014f5f3530710edb2a6406b21))
+
 ## [0.5.2](https://github.com/bauer-group/IP-David2Exchange/compare/v0.5.1...v0.5.2) (2026-11-02)
 
 ### 🐛 Bug Fixes
