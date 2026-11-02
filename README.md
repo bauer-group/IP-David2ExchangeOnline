@@ -210,9 +210,9 @@ Schedule via Task Scheduler under the David run user. Always run `setup --check`
 
 ### Performance
 
-- David export remains single-threaded (DvApi/COM is STA-bound) and fills a bounded queue.
-- At most **80 exported items** are held in memory; the queue is flushed in 10-item EWS batches.
-- The full mailbox is never loaded into memory; only pending manifest keys are kept.
+- Phase 1 is single-threaded: David is walked recursively folder by folder, each item is exported to EML and written to LiteDB (`Exported`).
+- Phase 2 is a LiteDB queue: 10-item batches, up to **8 workers**, each item imported individually with an explicit `FolderId`.
+- The full mailbox is never loaded into memory; only 80 queue items are materialized at a time.
 - **EWS batching is disabled in safe mode:** each item is imported individually with an explicit `FolderId`.
 - Up to **8 EWS workers** import items in parallel, each with its own `ExchangeService`.
 - EWS request timeout is **60 seconds**.
