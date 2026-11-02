@@ -13,5 +13,26 @@ public interface IOutputTarget : IAsyncDisposable
 
     Task WriteItemAsync(OutputItem item, CancellationToken cancellationToken);
 
+    async Task<IReadOnlyList<OutputResult>> WriteBatchAsync(
+        IReadOnlyList<OutputItem> items,
+        CancellationToken cancellationToken)
+    {
+        var results = new List<OutputResult>(items.Count);
+        foreach (var item in items)
+        {
+            try
+            {
+                await WriteItemAsync(item, cancellationToken);
+                results.Add(new OutputResult(item, true, null));
+            }
+            catch (Exception ex)
+            {
+                results.Add(new OutputResult(item, false, ex.Message));
+            }
+        }
+
+        return results;
+    }
+
     Task CompleteAsync(OutputSummary summary, CancellationToken cancellationToken);
 }

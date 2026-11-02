@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
@@ -45,6 +46,8 @@ public sealed class EwsOutputTarget : IOutputTarget
     private readonly Dictionary<WellKnownFolderName, Folder> _wellKnownFolders = new();
 
     private ExchangeService? _service;
+    private IReadOnlyList<ExchangeService> _services = Array.Empty<ExchangeService>();
+    private int _serviceIndex;
     private int _written;
     private int _alreadyPresent;
 
@@ -70,19 +73,25 @@ public sealed class EwsOutputTarget : IOutputTarget
             .AcquireTokenForClient(new[] { "https://outlook.office365.com/.default" })
             .ExecuteAsync(cancellationToken);
 
-        var service = new ExchangeService(ExchangeVersion.Exchange2013_SP1)
+        ExchangeService CreateService()
         {
-            Url = new Uri(_options.EwsUrl),
-            Credentials = new OAuthCredentials(token.AccessToken),
-            ImpersonatedUserId = new ImpersonatedUserId(
-                ConnectingIdType.SmtpAddress,
-                _options.TargetUpn),
-            Timeout = 300_000
-        };
+            var service = new ExchangeService(ExchangeVersion.Exchange2013_SP1)
+            {
+                Url = new Uri(_options.EwsUrl),
+                Credentials = new OAuthCredentials(token.AccessToken),
+                ImpersonatedUserId = new ImpersonatedUserId(
+                    ConnectingIdType.SmtpAddress,
+                    _options.TargetUpn),
+                Timeout = 300_000
+            };
 
-        service.HttpHeaders["X-AnchorMailbox"] = _options.TargetUpn;
-        service.UserAgent = "david2exchange/0.2";
-        _service = service;
+            service.HttpHeaders["X-AnchorMailbox"] = _options.TargetUpn;
+            service.UserAgent = "david2exchange/0.2";
+            return service;
+        }
+
+        _services = Enumerable.Range(0, 8).Select(_ => CreateService()).ToList();
+        _service = _services[0];
 
         Console.WriteLine(
             $"  EWS verbunden: {_options.TargetUpn} · Ziel: bestehende Ordner (Inbox, Sent Items, Kalender, Kontakte)");
@@ -114,6 +123,171 @@ public sealed class EwsOutputTarget : IOutputTarget
         }
     }
 
+    public async Task<IReadOnlyList<OutputResult>> WriteBatchAsync(
+        IReadOnlyList<OutputItem> items,
+        CancellationToken cancellationToken)
+    {
+        if (_service is null || _services.Count == 0)
+        {
+            throw new InvalidOperationException("EwsOutputTarget wurde nicht geöffnet.");
+        }
+
+        var results = new List<OutputResult>(items.Count);
+        var mailGroups = new Dictionary<string, (Folder Folder, List<OutputItem> Items)>(
+            StringComparer.OrdinalIgnoreCase);
+
+        foreach (var item in items)
+        {
+            if (item.Kind != "mail" || item.CheckExisting)
+            {
+                try
+                {
+                    await WriteItemAsync(item, cancellationToken);
+                    results.Add(new OutputResult(item, true, null));
+                }
+                catch (Exception ex)
+                {
+                    results.Add(new OutputResult(item, false, ex.Message));
+                }
+
+                continue;
+            }
+
+            var folder = await GetTargetFolderAsync(item, cancellationToken);
+            if (!mailGroups.TryGetValue(folder.Id.UniqueId, out var group))
+            {
+                group = (folder, new List<OutputItem>());
+                mailGroups[folder.Id.UniqueId] = group;
+            }
+
+            group.Items.Add(item);
+        }
+
+        foreach (var group in mailGroups.Values)
+        {
+            var chunks = group.Items.Chunk(100).ToList();
+            var batchResults = new ConcurrentBag<OutputResult>();
+
+            await Parallel.ForEachAsync(
+                chunks,
+                new ParallelOptions
+                {
+                    MaxDegreeOfParallelism = 8,
+                    CancellationToken = cancellationToken
+                },
+                async (chunk, token) =>
+                {
+                    var service = _services[
+                        (int)((uint)Interlocked.Increment(ref _serviceIndex) % _services.Count)];
+                    var chunkResults = await CreateMailBatchAsync(
+                        service,
+                        group.Folder,
+                        chunk,
+                        token);
+
+                    foreach (var result in chunkResults)
+                    {
+                        batchResults.Add(result);
+                    }
+                });
+
+            results.AddRange(batchResults);
+        }
+
+        return results;
+    }
+
+    private async Task<IReadOnlyList<OutputResult>> CreateMailBatchAsync(
+        ExchangeService service,
+        Folder folder,
+        IReadOnlyList<OutputItem> items,
+        CancellationToken cancellationToken)
+    {
+        var pending = new List<(OutputItem Item, EmailMessage Message)>(items.Count);
+        var results = new List<OutputResult>(items.Count);
+
+        foreach (var item in items)
+        {
+            if (string.IsNullOrWhiteSpace(item.StagedEmlPath) ||
+                !File.Exists(item.StagedEmlPath))
+            {
+                results.Add(new OutputResult(
+                    item,
+                    false,
+                    $"EWS-Ausgabe benötigt eine EML-Datei; Item {item.Id} hat keine."));
+                continue;
+            }
+
+            var bytes = await File.ReadAllBytesAsync(item.StagedEmlPath, cancellationToken);
+            var message = new EmailMessage(service)
+            {
+                MimeContent = new MimeContent("UTF-8", bytes),
+                IsRead = item.IsRead ?? false
+            };
+
+            message.SetExtendedProperty(PidTagMessageFlags, item.IsRead == true ? 1 : 0);
+            message.SetExtendedProperty(ItemKeyProperty, BuildItemKey(item));
+
+            if (item.ReceivedLocal.HasValue)
+            {
+                message.SetExtendedProperty(
+                    PidTagMessageDeliveryTime,
+                    item.ReceivedLocal.Value.ToUniversalTime());
+            }
+
+            if (item.SentLocal.HasValue)
+            {
+                message.SetExtendedProperty(
+                    PidTagClientSubmitTime,
+                    item.SentLocal.Value.ToUniversalTime());
+            }
+
+            message.SetExtendedProperty(PidTagReadReceiptRequested, false);
+            message.SetExtendedProperty(PidTagDeliveryReportRequested, false);
+            pending.Add((item, message));
+        }
+
+        if (pending.Count == 0)
+        {
+            return results;
+        }
+
+        try
+        {
+            var responses = await service.CreateItems(
+                pending.Select(entry => entry.Message),
+                folder.Id,
+                MessageDisposition.SaveOnly,
+                null);
+
+            for (var i = 0; i < pending.Count; i++)
+            {
+                var item = pending[i].Item;
+                if (i < responses.Count && responses[i].Result == ServiceResult.Success)
+                {
+                    Interlocked.Increment(ref _written);
+                    results.Add(new OutputResult(item, true, null));
+                }
+                else
+                {
+                    var error = i < responses.Count
+                        ? $"{responses[i].Result}: {responses[i].ErrorMessage}"
+                        : "Keine ServiceResponse";
+                    results.Add(new OutputResult(item, false, error));
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            foreach (var entry in pending)
+            {
+                results.Add(new OutputResult(entry.Item, false, ex.Message));
+            }
+        }
+
+        return results;
+    }
+
     private async Task ImportMailAsync(
         OutputItem item,
         Folder folder,
@@ -128,14 +302,16 @@ public sealed class EwsOutputTarget : IOutputTarget
         var bytes = await File.ReadAllBytesAsync(item.StagedEmlPath, cancellationToken);
         var messageId = TryReadMessageId(bytes);
 
-        if (!string.IsNullOrWhiteSpace(messageId) &&
+        if (item.CheckExisting &&
+            !string.IsNullOrWhiteSpace(messageId) &&
             await ExistsAsync(messageId, folder, cancellationToken))
         {
             _alreadyPresent++;
             return;
         }
 
-        if (await ExistsByItemKeyAsync(item, folder, cancellationToken))
+        if (item.CheckExisting &&
+            await ExistsByItemKeyAsync(item, folder, cancellationToken))
         {
             _alreadyPresent++;
             return;
@@ -189,7 +365,8 @@ public sealed class EwsOutputTarget : IOutputTarget
         Folder folder,
         CancellationToken cancellationToken)
     {
-        if (await ExistsByItemKeyAsync(item, folder, cancellationToken))
+        if (item.CheckExisting &&
+            await ExistsByItemKeyAsync(item, folder, cancellationToken))
         {
             _alreadyPresent++;
             return;
@@ -242,7 +419,8 @@ public sealed class EwsOutputTarget : IOutputTarget
         Folder folder,
         CancellationToken cancellationToken)
     {
-        if (await ExistsByItemKeyAsync(item, folder, cancellationToken))
+        if (item.CheckExisting &&
+            await ExistsByItemKeyAsync(item, folder, cancellationToken))
         {
             _alreadyPresent++;
             return;
@@ -319,7 +497,8 @@ public sealed class EwsOutputTarget : IOutputTarget
         Folder folder,
         CancellationToken cancellationToken)
     {
-        if (await ExistsByItemKeyAsync(item, folder, cancellationToken))
+        if (item.CheckExisting &&
+            await ExistsByItemKeyAsync(item, folder, cancellationToken))
         {
             _alreadyPresent++;
             return;
@@ -746,6 +925,7 @@ public sealed class EwsOutputTarget : IOutputTarget
     {
         _folderCache.Clear();
         _wellKnownFolders.Clear();
+        _services = Array.Empty<ExchangeService>();
         _service = null;
         return ValueTask.CompletedTask;
     }

@@ -192,6 +192,7 @@ public sealed class MigrationRunner
 
                     try
                     {
+                        var exported = new List<OutputItem>();
                         var archive = session.OpenArchive(mailbox.Source.ArchivePath);
                         foreach (var (item, archivePath, folderPath) in Walk(
                                      archive,
@@ -204,7 +205,7 @@ public sealed class MigrationRunner
                                 continue;
                             }
 
-                            await ProcessItemAsync(
+                            var outputItem = ExportItem(
                                 manifest,
                                 mailbox,
                                 config.David.ArchiveRoot,
@@ -212,13 +213,56 @@ public sealed class MigrationRunner
                                 archivePath,
                                 folderPath,
                                 key,
-                                mailboxOutput,
-                                Path.Combine(emlStageRoot, mailbox.Id),
-                                cancellationToken);
+                                Path.Combine(emlStageRoot, mailbox.Id));
+
+                            if (outputItem is not null)
+                            {
+                                exported.Add(outputItem);
+                            }
+
                             pendingKeys.Remove(key);
                             if (pendingKeys.Count == 0)
                             {
                                 break;
+                            }
+                        }
+
+                        foreach (var batch in exported.Chunk(100))
+                        {
+                            var results = await mailboxOutput.WriteBatchAsync(
+                                batch,
+                                cancellationToken);
+
+                            foreach (var result in results)
+                            {
+                                var key = BuildKey(
+                                    mailbox.Id,
+                                    result.Item.ArchivePath,
+                                    result.Item.Id);
+                                var document = manifest.Get(key);
+                                if (document is null)
+                                {
+                                    continue;
+                                }
+
+                                if (result.Success)
+                                {
+                                    document.State = ItemState.Imported;
+                                    document.ImportedUtc = DateTime.UtcNow;
+                                    document.LastError = null;
+                                    manifest.Save(document);
+                                    Console.WriteLine(
+                                        $"  OK {result.Item.Id} · {result.Item.Subject}");
+                                }
+                                else
+                                {
+                                    document.State = ItemState.Failed;
+                                    document.Attempts++;
+                                    document.LastError = result.Error;
+                                    manifest.Save(document);
+                                    Console.Error.WriteLine(
+                                        $"  FEHLER {result.Item.Id}: {result.Error}");
+                                }
                             }
                         }
                     }
@@ -370,7 +414,7 @@ public sealed class MigrationRunner
         return 0;
     }
 
-    private static async Task ProcessItemAsync(
+    private static OutputItem? ExportItem(
         LiteDbManifest manifest,
         MailboxMapping mailbox,
         string archiveRoot,
@@ -378,16 +422,14 @@ public sealed class MigrationRunner
         string archivePath,
         string folderPath,
         string key,
-        IOutputTarget output,
-        string emlStageDirectory,
-        CancellationToken cancellationToken)
+        string emlStageDirectory)
     {
         var document = manifest.Get(key)
                        ?? throw new InvalidOperationException($"Manifest-Item {key} fehlt.");
 
         if (document.State == ItemState.Imported)
         {
-            return;
+            return null;
         }
 
         var kind = DavidItemTypes.Kind(document.ItemType);
@@ -396,7 +438,7 @@ public sealed class MigrationRunner
             document.State = ItemState.Skipped;
             document.LastError = $"Typ {document.ItemType} ({kind}) wird nicht unterstützt.";
             manifest.Save(document);
-            return;
+            return null;
         }
 
         if (!IsIncluded(mailbox, kind))
@@ -404,9 +446,10 @@ public sealed class MigrationRunner
             document.State = ItemState.Skipped;
             document.LastError = $"Typ '{kind}' ist nicht in include enthalten.";
             manifest.Save(document);
-            return;
+            return null;
         }
 
+        var checkExisting = document.State is ItemState.Exported or ItemState.Importing;
         var needsEml = DavidItemTypes.IsMailLike(document.ItemType);
         string? emlPath = null;
 
@@ -445,7 +488,7 @@ public sealed class MigrationRunner
                             document.LastError = syntheticError;
                             manifest.Save(document);
                             Console.Error.WriteLine($"  FEHLER {item.Id}: {syntheticError}");
-                            return;
+                            return null;
                         }
                     }
                 }
@@ -466,7 +509,7 @@ public sealed class MigrationRunner
                         document.LastError = syntheticError;
                         manifest.Save(document);
                         Console.Error.WriteLine($"  FEHLER {item.Id}: {syntheticError}");
-                        return;
+                        return null;
                     }
                 }
 
@@ -485,46 +528,25 @@ public sealed class MigrationRunner
             manifest.Save(document);
         }
 
-        try
-        {
-            document.State = ItemState.Importing;
-            manifest.Save(document);
-
-            var outputItem = new OutputItem(
-                archivePath,
-                item.Id,
-                document.ItemType,
-                kind,
-                item.Subject,
-                item.SizeBytes,
-                item.Properties.TryGetValue("AttachmentCount", out var count) && int.TryParse(count, out var parsed)
-                    ? parsed
-                    : null,
-                item.ReceivedLocal,
-                item.SentLocal,
-                item.IsRead,
-                emlPath is null ? null : Path.Combine("eml", Path.GetFileName(emlPath)),
-                emlPath,
-                item.Properties,
-                kind,
-                document.FolderPath ?? string.Empty);
-
-            await output.WriteItemAsync(outputItem, cancellationToken);
-
-            document.State = ItemState.Imported;
-            document.ImportedUtc = DateTime.UtcNow;
-            document.LastError = null;
-            manifest.Save(document);
-            Console.WriteLine($"  OK {item.Id} · {item.Subject}");
-        }
-        catch (Exception ex)
-        {
-            document.State = ItemState.Failed;
-            document.Attempts++;
-            document.LastError = ex.Message;
-            manifest.Save(document);
-            Console.Error.WriteLine($"  FEHLER {item.Id}: {ex.Message}");
-        }
+        return new OutputItem(
+            archivePath,
+            item.Id,
+            document.ItemType,
+            kind,
+            item.Subject,
+            item.SizeBytes,
+            item.Properties.TryGetValue("AttachmentCount", out var count) && int.TryParse(count, out var parsed)
+                ? parsed
+                : null,
+            item.ReceivedLocal,
+            item.SentLocal,
+            item.IsRead,
+            emlPath is null ? null : Path.Combine("eml", Path.GetFileName(emlPath)),
+            emlPath,
+            item.Properties,
+            kind,
+            document.FolderPath ?? string.Empty,
+            checkExisting);
     }
 
     private static IEnumerable<(IDavidItem Item, string ArchivePath, string FolderPath)> Walk(

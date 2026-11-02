@@ -31,7 +31,14 @@ public sealed record OutputItem(
     [property: JsonIgnore] string? StagedEmlPath,
     IReadOnlyDictionary<string, string?> Properties,
     string Kind = "mail",
-    string FolderPath = "");
+    string FolderPath = "",
+    bool CheckExisting = true);
+
+public sealed record OutputResult(
+    OutputItem Item,
+    bool Success,
+    string? Error,
+    bool AlreadyPresent = false);
 
 public sealed record OutputSummary(
     int Items,
