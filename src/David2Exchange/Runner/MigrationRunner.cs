@@ -434,12 +434,11 @@ public sealed class MigrationRunner
                         }
                     }
 
-                    if (DavidItemTypes.IsMailLike(document.ItemType) &&
-                        document.ItemType != "2")
+                    else if (DavidItemTypes.IsMailLike(document.ItemType))
                     {
                         Console.WriteLine(
                             $"  HINWEIS {item.Id}: David-EML nicht verfügbar; " +
-                            $"Fallback für {DavidItemTypes.Kind(document.ItemType)}.");
+                            $"generiere EML-Fallback für {DavidItemTypes.Kind(document.ItemType)}.");
 
                         if (!WriteSyntheticEml(
                                 emlPath,
@@ -671,6 +670,12 @@ public sealed class MigrationRunner
         var builder = new StringBuilder();
         builder.AppendLine($"From: {SanitizeHeader(from)}");
         builder.AppendLine($"To: {SanitizeHeader(to)}");
+        var cc = Get("CC");
+        if (!string.IsNullOrWhiteSpace(cc))
+        {
+            builder.AppendLine($"Cc: {SanitizeHeader(cc)}");
+        }
+
         builder.AppendLine($"Subject: {SanitizeHeader(subject)}");
         builder.AppendLine($"Date: {date:r}");
         builder.AppendLine($"Message-ID: <david-{Sanitize(item.Id)}@{mailbox.Id}.david.local>");
