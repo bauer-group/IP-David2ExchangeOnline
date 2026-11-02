@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.5.1](https://github.com/bauer-group/IP-David2Exchange/compare/v0.5.0...v0.5.1) (2026-11-02)
+
+### 🐛 Bug Fixes
+
+* **migration:** keep synthetic EML bodies free of provenance text ([40dfbe8](https://github.com/bauer-group/IP-David2Exchange/commit/40dfbe807819042c0eb00087de99cf54eb03e0cd))
+
 ## [0.5.0](https://github.com/bauer-group/IP-David2Exchange/compare/v0.4.6...v0.5.0) (2026-11-02)
 
 ### 🚀 Features
