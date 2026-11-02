@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.4.2](https://github.com/bauer-group/IP-David2Exchange/compare/v0.4.1...v0.4.2) (2026-11-02)
+
+### 🐛 Bug Fixes
+
+* **migration:** default to all items and harden DVEml export buffer ([5062f21](https://github.com/bauer-group/IP-David2Exchange/commit/5062f21c8ad4fcc4f2ef7b083cf44998d6078134))
+
 ## [0.4.1](https://github.com/bauer-group/IP-David2Exchange/compare/v0.4.0...v0.4.1) (2026-11-02)
 
 ### 🐛 Bug Fixes
