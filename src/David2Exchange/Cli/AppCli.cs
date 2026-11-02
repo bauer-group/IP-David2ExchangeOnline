@@ -529,7 +529,8 @@ public static class AppCli
         try
         {
             var options = ParseRunOptions(args, allowDryRun: true);
-            return new Runner.MigrationRunner().RunAsync(options).GetAwaiter().GetResult();
+            return StaTaskRunner.Run(() =>
+                new Runner.MigrationRunner().RunAsync(options));
         }
         catch (CliException ex)
         {
