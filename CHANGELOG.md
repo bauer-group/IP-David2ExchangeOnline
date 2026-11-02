@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.7.0](https://github.com/bauer-group/IP-David2Exchange/compare/v0.6.3...v0.7.0) (2026-11-02)
+
+### 🚀 Features
+
+* **ews:** batch 100 items and import with 8 parallel workers ([a061f28](https://github.com/bauer-group/IP-David2Exchange/commit/a061f28d4ce4ec623cfbfb2550c43277e2a9943b))
+
 ## [0.6.3](https://github.com/bauer-group/IP-David2Exchange/compare/v0.6.2...v0.6.3) (2026-11-02)
 
 ### 🐛 Bug Fixes
