@@ -143,7 +143,7 @@ Fax images: for **unpacked** David archives, `FaxItem.Image` is a real TIFF path
 
 Unsupported items are **not silently dropped**: they are written to the manifest as `skipped` with `last_error`/reason and appear in the report. See [docs/CONFIG.md](docs/CONFIG.md) for `include` and reporting.
 
-Synthetic fallback EMLs contain **only the original body and attachments**. No “Migriert aus David” or similar text is appended, so the message content remains revision-safe. Provenance is kept in manifest/report metadata, not in the message body.
+Synthetic fallback EMLs contain **only the original body and attachments**. No “Migriert aus David” or similar text is appended, so the message content remains revision-safe. If David provides HTML, the fallback is `multipart/alternative` with both `text/plain` and `text/html`; formatting is not reduced to plain text. Provenance is kept in manifest/report metadata, not in the message body.
 
 ### Faxe: Archive vorher entpacken
 
