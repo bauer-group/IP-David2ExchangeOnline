@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.4.4](https://github.com/bauer-group/IP-David2Exchange/compare/v0.4.3...v0.4.4) (2026-11-02)
+
+### 🐛 Bug Fixes
+
+* **fax:** resolve David image paths against configured archiveRoot ([7a54623](https://github.com/bauer-group/IP-David2Exchange/commit/7a54623b5c19b29ac811f8b75deae5651cda74a9))
+
 ## [0.4.3](https://github.com/bauer-group/IP-David2Exchange/compare/v0.4.2...v0.4.3) (2026-11-02)
 
 ### 🐛 Bug Fixes
