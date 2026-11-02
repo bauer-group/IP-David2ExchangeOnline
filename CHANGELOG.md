@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.9.7](https://github.com/bauer-group/IP-David2Exchange/compare/v0.9.6...v0.9.7) (2026-11-02)
+
+### 🐛 Bug Fixes
+
+* **ews:** verify batch items and move misplaced messages ([8f356c1](https://github.com/bauer-group/IP-David2Exchange/commit/8f356c1893bffb1a8559ec8062e21e72e61f4564))
+
 ## [0.9.6](https://github.com/bauer-group/IP-David2Exchange/compare/v0.9.5...v0.9.6) (2026-11-02)
 
 ### 🐛 Bug Fixes
