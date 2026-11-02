@@ -261,11 +261,13 @@ public sealed class EwsOutputTarget : IOutputTarget
                         ? await ExistsWithRetryAsync(
                             entry.MessageId!,
                             folder,
-                            cancellationToken)
+                            cancellationToken,
+                            service)
                         : await ExistsByItemKeyAsync(
                             entry.Item,
                             folder,
-                            cancellationToken);
+                            cancellationToken,
+                            service);
 
                     if (exists)
                     {
@@ -314,7 +316,8 @@ public sealed class EwsOutputTarget : IOutputTarget
                             verified = await ExistsWithRetryAsync(
                                 pending[i].MessageId!,
                                 folder,
-                                cancellationToken);
+                                cancellationToken,
+                                service);
 
                             if (!verified)
                             {
@@ -322,7 +325,8 @@ public sealed class EwsOutputTarget : IOutputTarget
                                 verified = await EnsureMessageInFolderAsync(
                                     pending[i].MessageId!,
                                     folder,
-                                    cancellationToken);
+                                    cancellationToken,
+                                    service);
                             }
                         }
                         catch (Exception ex)
@@ -1034,38 +1038,42 @@ public sealed class EwsOutputTarget : IOutputTarget
     private async Task<bool> ExistsByItemKeyAsync(
         OutputItem item,
         Folder folder,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ExchangeService? service = null)
     {
         return await FindAsync(
             new SearchFilter.IsEqualTo(ItemKeyProperty, BuildItemKey(item)),
             folder,
-            cancellationToken);
+            cancellationToken,
+            service);
     }
 
     private async Task<bool> EnsureMessageInFolderAsync(
         string messageId,
         Folder intendedFolder,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ExchangeService? service = null)
     {
-        if (_service is null)
+        var exchange = service ?? _service;
+        if (exchange is null)
         {
             throw new InvalidOperationException("EwsOutputTarget wurde nicht geöffnet.");
         }
 
-        var root = await Folder.Bind(_service, WellKnownFolderName.MsgFolderRoot);
+        var root = await Folder.Bind(exchange, WellKnownFolderName.MsgFolderRoot);
         var folderView = new FolderView(1000)
         {
             Traversal = FolderTraversal.Deep,
             PropertySet = new PropertySet(BasePropertySet.IdOnly)
         };
-        var folders = await _service.FindFolders(root.Id, folderView);
+        var folders = await exchange.FindFolders(root.Id, folderView);
         var filter = new SearchFilter.IsEqualTo(
             EmailMessageSchema.InternetMessageId,
             messageId);
 
         foreach (var folder in folders.Folders)
         {
-            var items = await _service.FindItems(
+            var items = await exchange.FindItems(
                 folder.Id,
                 filter,
                 new ItemView(10));
@@ -1088,9 +1096,11 @@ public sealed class EwsOutputTarget : IOutputTarget
     private async Task<bool> ExistsWithRetryAsync(
         string messageId,
         Folder folder,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ExchangeService? service = null)
     {
-        if (_service is null)
+        var exchange = service ?? _service;
+        if (exchange is null)
         {
             throw new InvalidOperationException("EwsOutputTarget wurde nicht geöffnet.");
         }
@@ -1107,7 +1117,7 @@ public sealed class EwsOutputTarget : IOutputTarget
                     PropertySet = new PropertySet(BasePropertySet.IdOnly)
                 };
 
-                var result = await _service.FindItems(folder.Id, filter, view);
+                var result = await exchange.FindItems(folder.Id, filter, view);
                 return result.Items.Count > 0;
             }
             catch (Exception ex) when (
@@ -1124,20 +1134,24 @@ public sealed class EwsOutputTarget : IOutputTarget
     private async Task<bool> ExistsAsync(
         string messageId,
         Folder folder,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ExchangeService? service = null)
     {
         return await FindAsync(
             new SearchFilter.IsEqualTo(EmailMessageSchema.InternetMessageId, messageId),
             folder,
-            cancellationToken);
+            cancellationToken,
+            service);
     }
 
     private async Task<bool> FindAsync(
         SearchFilter filter,
         Folder folder,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ExchangeService? service = null)
     {
-        if (_service is null)
+        var exchange = service ?? _service;
+        if (exchange is null)
         {
             return false;
         }
@@ -1149,7 +1163,7 @@ public sealed class EwsOutputTarget : IOutputTarget
                 PropertySet = new PropertySet(BasePropertySet.IdOnly)
             };
 
-            var result = await _service.FindItems(folder.Id, filter, view);
+            var result = await exchange.FindItems(folder.Id, filter, view);
             return result.Items.Count > 0;
         }
         catch (Exception ex)
