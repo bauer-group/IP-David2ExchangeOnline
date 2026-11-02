@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.4.6](https://github.com/bauer-group/IP-David2Exchange/compare/v0.4.5...v0.4.6) (2026-11-02)
+
+### 🐛 Bug Fixes
+
+* **fax:** read unpacked TIFF paths and remap archiveRoot ([2c9ecc0](https://github.com/bauer-group/IP-David2Exchange/commit/2c9ecc0bdfe9a47562b656dc32634a97508acec8))
+
 ## [0.4.5](https://github.com/bauer-group/IP-David2Exchange/compare/v0.4.4...v0.4.5) (2026-11-02)
 
 ### 🐛 Bug Fixes
