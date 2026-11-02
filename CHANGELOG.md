@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.4.1](https://github.com/bauer-group/IP-David2Exchange/compare/v0.4.0...v0.4.1) (2026-11-02)
+
+### 🐛 Bug Fixes
+
+* **mail:** fall back to generic EML when David export fails ([388e713](https://github.com/bauer-group/IP-David2Exchange/commit/388e713e855e12a64d7868bdd8ec01f883d9df98))
+
 ## [0.4.0](https://github.com/bauer-group/IP-David2Exchange/compare/v0.3.5...v0.4.0) (2026-11-02)
 
 ### 🚀 Features
