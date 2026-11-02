@@ -208,6 +208,15 @@ Recommended operation:
 
 Schedule via Task Scheduler under the David run user. Always run `setup --check` before a scheduled delta so an EWS outage is reported as an environment problem, not as item failures.
 
+### Performance
+
+- David export remains single-threaded (DvApi/COM is STA-bound) and fills the queue.
+- EWS imports are sent in batches of up to **100** items.
+- Up to **8 EWS workers** import batches in parallel, each with its own `ExchangeService`.
+- Dedupe lookup is skipped for newly discovered items; it is only used for resume (`Exported`/`Importing`).
+- LiteDB state is written after each completed EWS batch, not per item.
+- `limits.limit` still caps the run; use `--all` for a full/delta run.
+
 ## 6. Abort and resume
 
 Every item has an explicit state in `data\manifest.db`:
