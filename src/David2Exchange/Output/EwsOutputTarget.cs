@@ -272,9 +272,13 @@ public sealed class EwsOutputTarget : IOutputTarget
             for (var i = 0; i < pending.Count; i++)
             {
                 var item = pending[i].Item;
+                var batchError = i < responses.Count
+                    ? $"{responses[i].Result}: {responses[i].ErrorMessage}"
+                    : "Keine ServiceResponse";
+
                 if (i < responses.Count && responses[i].Result == ServiceResult.Success)
                 {
-                    var verified = true;
+                    var verified = false;
                     if (!string.IsNullOrWhiteSpace(pending[i].MessageId))
                     {
                         try
@@ -283,11 +287,20 @@ public sealed class EwsOutputTarget : IOutputTarget
                                 pending[i].MessageId!,
                                 folder,
                                 cancellationToken);
+
+                            if (!verified)
+                            {
+                                // Batch kann trotz Success im falschen Ordner landen.
+                                verified = await EnsureMessageInFolderAsync(
+                                    pending[i].MessageId!,
+                                    folder,
+                                    cancellationToken);
+                            }
                         }
                         catch (Exception ex)
                         {
-                            Console.Error.WriteLine(
-                                $"  WARNUNG Batch-Verifikation {item.Id}: {ex.Message}");
+                            batchError =
+                                $"Batch-Verifikation fehlgeschlagen: {ex.Message}";
                         }
                     }
 
@@ -297,17 +310,19 @@ public sealed class EwsOutputTarget : IOutputTarget
                         results.Add(new OutputResult(item, true, null));
                         continue;
                     }
+
+                    batchError = string.IsNullOrWhiteSpace(batchError)
+                        ? "Batch meldete Erfolg, Item nicht im Zielordner gefunden"
+                        : batchError;
                 }
 
-                var batchError = i < responses.Count
-                    ? $"{responses[i].Result}: {responses[i].ErrorMessage}"
-                    : "Keine ServiceResponse";
-
-                // Ein fehlgeschlagener Batch darf keine Items verschlucken.
-                // Deshalb wird das Item einzeln nachgezogen.
+                // Ein fehlgeschlagener/verschwundener Batch darf keine Items
+                // verschlucken. Einzelimport mit Dedupe-Prüfung.
                 try
                 {
-                    await WriteItemAsync(item, cancellationToken);
+                    await WriteItemAsync(
+                        item with { CheckExisting = true },
+                        cancellationToken);
                     results.Add(new OutputResult(item, true, null));
                 }
                 catch (Exception ex)
@@ -992,6 +1007,49 @@ public sealed class EwsOutputTarget : IOutputTarget
             new SearchFilter.IsEqualTo(ItemKeyProperty, BuildItemKey(item)),
             folder,
             cancellationToken);
+    }
+
+    private async Task<bool> EnsureMessageInFolderAsync(
+        string messageId,
+        Folder intendedFolder,
+        CancellationToken cancellationToken)
+    {
+        if (_service is null)
+        {
+            throw new InvalidOperationException("EwsOutputTarget wurde nicht geöffnet.");
+        }
+
+        var root = await Folder.Bind(_service, WellKnownFolderName.MsgFolderRoot);
+        var folderView = new FolderView(1000)
+        {
+            Traversal = FolderTraversal.Deep,
+            PropertySet = new PropertySet(BasePropertySet.IdOnly)
+        };
+        var folders = await _service.FindFolders(root.Id, folderView);
+        var filter = new SearchFilter.IsEqualTo(
+            EmailMessageSchema.InternetMessageId,
+            messageId);
+
+        foreach (var folder in folders.Folders)
+        {
+            var items = await _service.FindItems(
+                folder.Id,
+                filter,
+                new ItemView(10));
+
+            foreach (var item in items.Items)
+            {
+                if (folder.Id.UniqueId == intendedFolder.Id.UniqueId)
+                {
+                    return true;
+                }
+
+                await item.Move(intendedFolder.Id);
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private async Task<bool> ExistsWithRetryAsync(
