@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.8.1](https://github.com/bauer-group/IP-David2Exchange/compare/v0.8.0...v0.8.1) (2026-11-02)
+
+### 🐛 Bug Fixes
+
+* **ews:** retry failed batch items individually ([56cebec](https://github.com/bauer-group/IP-David2Exchange/commit/56cebec18fb5abe6250c0f8ed3d5a511664b3e5a))
+
 ## [0.8.0](https://github.com/bauer-group/IP-David2Exchange/compare/v0.7.0...v0.8.0) (2026-11-02)
 
 ### 🚀 Features
