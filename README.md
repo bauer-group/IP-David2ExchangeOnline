@@ -213,8 +213,8 @@ Schedule via Task Scheduler under the David run user. Always run `setup --check`
 - David export remains single-threaded (DvApi/COM is STA-bound) and fills a bounded queue.
 - At most **80 exported items** are held in memory; the queue is flushed in 10-item EWS batches.
 - The full mailbox is never loaded into memory; only pending manifest keys are kept.
-- EWS imports are sent in batches of **10** items (Microsoft EWS limit).
-- Up to **8 EWS workers** import batches in parallel, each with its own `ExchangeService`.
+- **EWS batching is disabled in safe mode:** each item is imported individually with an explicit `FolderId`.
+- Up to **8 EWS workers** import items in parallel, each with its own `ExchangeService`.
 - EWS request timeout is **60 seconds**.
 - Throttling (`ErrorServerBusy`, `ErrorTimeoutExpired`, `ErrorBatchProcessingStopped`, transient HTTP/timeouts) is retried with exponential backoff and jitter; `BackOffMilliseconds` from EWS is honored.
 - Every batch success is verified by `Message-ID` in the intended folder. Missing items are imported individually; items found in the wrong folder are moved to the intended folder. A batch failure cannot silently drop messages.
