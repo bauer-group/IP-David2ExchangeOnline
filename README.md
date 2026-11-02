@@ -120,7 +120,7 @@ Relative paths in `migration.yaml` resolve from the config folder. The default c
 
 | David content | Detection / probe | Migration | Notes |
 |---|---|---|---|
-| E-mails | yes | **yes** | EML, MIME, original Message-ID, sent/received date, read state |
+| E-mails | yes | **yes** | David EML preferred; generic EML fallback with headers/attachments if David export fails |
 | Fax | yes | yes | **preferred:** complete David EML incl. all headers. Fallback: multipart EML with the original fax image attachment – never a text-only EML. If neither is possible, the item fails visibly. |
 | SMS | yes | yes | David EML first; text/attachment fallback only if that fails |
 | Chat | yes | yes | David EML first; text/attachment fallback only if that fails |
