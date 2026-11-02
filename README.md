@@ -217,7 +217,7 @@ Schedule via Task Scheduler under the David run user. Always run `setup --check`
 - Up to **8 EWS workers** import batches in parallel, each with its own `ExchangeService`.
 - EWS request timeout is **60 seconds**.
 - Throttling (`ErrorServerBusy`, `ErrorTimeoutExpired`, `ErrorBatchProcessingStopped`, transient HTTP/timeouts) is retried with exponential backoff and jitter; `BackOffMilliseconds` from EWS is honored.
-- Failed batch items are retried individually, so a batch failure does not silently drop messages.
+- Every batch success is verified by `Message-ID` in the intended folder. Missing items are imported individually; items found in the wrong folder are moved to the intended folder. A batch failure cannot silently drop messages.
 - Dedupe lookup is skipped for newly discovered items; it is only used for resume (`Exported`/`Importing`).
 - LiteDB state is written after each completed EWS batch, not per item.
 - Staged EMLs and attachment folders are deleted immediately after a successful batch/item import.
