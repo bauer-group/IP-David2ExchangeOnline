@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.6.2](https://github.com/bauer-group/IP-David2Exchange/compare/v0.6.1...v0.6.2) (2026-11-02)
+
+### 🐛 Bug Fixes
+
+* **migration:** run migration on a single STA thread ([2510726](https://github.com/bauer-group/IP-David2Exchange/commit/2510726d16b524e144e2ea8476e77153adbeac7b))
+
 ## [0.6.1](https://github.com/bauer-group/IP-David2Exchange/compare/v0.6.0...v0.6.1) (2026-11-02)
 
 ### 🐛 Bug Fixes
