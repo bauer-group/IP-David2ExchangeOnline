@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.9.11](https://github.com/bauer-group/IP-David2Exchange/compare/v0.9.10...v0.9.11) (2026-11-02)
+
+### 🐛 Bug Fixes
+
+* **ews:** use per-worker service for queue verification ([e61e00d](https://github.com/bauer-group/IP-David2Exchange/commit/e61e00d55831d7b097ce22987e1fb6c899b2da42))
+
 ## [0.9.10](https://github.com/bauer-group/IP-David2Exchange/compare/v0.9.9...v0.9.10) (2026-11-02)
 
 ### ♻️ Code Refactoring
