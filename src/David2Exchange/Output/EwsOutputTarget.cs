@@ -778,6 +778,26 @@ public sealed class EwsOutputTarget : IOutputTarget
             WellKnownFolderName.Inbox,
             cancellationToken);
 
+        // Die Wurzel zusätzlich aus dem echten David-Archivpfad bestimmen.
+        // Das schützt gegen falsche/leere FolderPath-Werte aus alten Manifesten.
+        var archiveRoot = FindArchiveRoot(item.ArchivePath);
+        if (archiveRoot is not null)
+        {
+            var root = await BindWellKnownAsync(archiveRoot.Value, cancellationToken);
+            var subSegments = segments.ToList();
+            while (subSegments.Count > 0 &&
+                   TryMapMailRoot(subSegments[0], out _))
+            {
+                subSegments.RemoveAt(0);
+            }
+
+            return await EnsureSubfoldersAsync(
+                root,
+                subSegments,
+                archiveRoot.Value.ToString(),
+                cancellationToken);
+        }
+
         if (segments.Count == 0)
         {
             return inbox;
@@ -890,6 +910,21 @@ public sealed class EwsOutputTarget : IOutputTarget
         return roots.Any(root => segments[0].Equals(root, StringComparison.OrdinalIgnoreCase))
             ? segments.Skip(1).ToList()
             : segments;
+    }
+
+    private static WellKnownFolderName? FindArchiveRoot(string archivePath)
+    {
+        foreach (var segment in archivePath
+                     .Replace('/', '\\')
+                     .Split('\\', StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (TryMapMailRoot(segment, out var folder))
+            {
+                return folder;
+            }
+        }
+
+        return null;
     }
 
     private static bool TryMapMailRoot(string segment, out WellKnownFolderName folder)
