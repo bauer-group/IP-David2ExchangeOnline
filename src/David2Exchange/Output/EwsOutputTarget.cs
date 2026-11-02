@@ -154,10 +154,11 @@ public sealed class EwsOutputTarget : IOutputTarget
             }
 
             var folder = await GetTargetFolderAsync(item, cancellationToken);
-            if (!mailGroups.TryGetValue(folder.Id.UniqueId, out var group))
+            var folderKey = $"{folder.Id.UniqueId}|{folder.DisplayName}";
+            if (!mailGroups.TryGetValue(folderKey, out var group))
             {
                 group = (folder, new List<OutputItem>());
-                mailGroups[folder.Id.UniqueId] = group;
+                mailGroups[folderKey] = group;
                 Console.WriteLine($"  ZIEL {item.FolderPath,-20} -> {folder.DisplayName}");
             }
 
