@@ -64,7 +64,7 @@ david:
   archiveRoot: \\192.168.0.10\David\Archive
 ```
 
-Fax images: for **unpacked** David archives, `FaxItem.Image` is a real TIFF path. The tool remaps its `...\archive\...` suffix to `david.archiveRoot` and embeds the TIFF as `image/tiff`. For **packed** archives, `FaxItem.Image` is only an internal container path; the file does not exist, so the fax is marked `failed` with that path instead of creating a text-only EML. Packed faxes require a server-side David API export/unpack.
+Fax images: for **unpacked** David archives, `FaxItem.Image` is a real TIFF path. The tool remaps its `...\archive\...` suffix to `david.archiveRoot` and embeds the TIFF as `image/tiff`. `archiveRoot` may be either `\\server\david` or `\\server\david\archive`; both are tried. For **packed** archives, `FaxItem.Image` is only an internal container path; the file does not exist, so the fax is marked `failed` with that path instead of creating a text-only EML. Packed faxes require a server-side David API export/unpack.
 
 ## 3. Quick start (EXE)
 

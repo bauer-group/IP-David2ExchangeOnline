@@ -67,7 +67,7 @@ david2exchange run --config migration.yaml --wave wave-1 --all --output ews
 ```yaml
 david:
   server: 192.168.0.10                 # Hostname oder IP; nur Anzeige/Report
-  archiveRoot: \\192.168.0.10\David\Archive  # UNC, auch per IP; Basis für ungepackte Fax-TIFFs
+  archiveRoot: \\192.168.0.10\David  # UNC, auch per IP; mit oder ohne \archive möglich
   progId: DVOBJAPILib.DvISEAPI         # je nach Installation
   timezone: Europe/Berlin
   logon: AUTH                          # angemeldeter Windows-Benutzer
