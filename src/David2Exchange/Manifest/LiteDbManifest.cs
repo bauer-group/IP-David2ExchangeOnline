@@ -9,6 +9,7 @@ public sealed class LiteDbManifest : IDisposable
     private readonly ILiteCollection<ItemDocument> _items;
     private readonly ILiteCollection<RunDocument> _runs;
     private readonly string _path;
+    private readonly object _gate = new();
 
     public LiteDbManifest(string path)
     {
@@ -27,49 +28,64 @@ public sealed class LiteDbManifest : IDisposable
 
     public RunDocument BeginRun(string command, string toolVersion)
     {
-        var run = new RunDocument
+        lock (_gate)
         {
-            Command = command,
-            ToolVersion = toolVersion
-        };
-        _runs.Insert(run);
-        return run;
+            var run = new RunDocument
+            {
+                Command = command,
+                ToolVersion = toolVersion
+            };
+            _runs.Insert(run);
+            return run;
+        }
     }
 
     public void FinishRun(RunDocument run, string? error = null)
     {
-        run.FinishedUtc = DateTime.UtcNow;
-        run.Error = error;
-        _runs.Update(run);
+        lock (_gate)
+        {
+            run.FinishedUtc = DateTime.UtcNow;
+            run.Error = error;
+            _runs.Update(run);
+        }
     }
 
     public ItemDocument? Get(string key)
     {
-        return _items.FindById(key);
+        lock (_gate)
+        {
+            return _items.FindById(key);
+        }
     }
 
     public void UpsertDiscovered(ItemDocument item)
     {
-        var existing = _items.FindById(item.Key);
-        if (existing is null)
+        lock (_gate)
         {
-            _items.Insert(item);
-            return;
-        }
+            var existing = _items.FindById(item.Key);
+            if (existing is null)
+            {
+                _items.Insert(item);
+                return;
+            }
 
-        existing.LastSeenUtc = DateTime.UtcNow;
-        existing.Subject = item.Subject;
-        existing.SizeBytes = item.SizeBytes;
-        existing.ReceivedLocal = item.ReceivedLocal;
-        existing.SentLocal = item.SentLocal;
-        existing.IsRead = item.IsRead;
-        existing.ArchivePath = item.ArchivePath;
-        _items.Update(existing);
+            existing.LastSeenUtc = DateTime.UtcNow;
+            existing.Subject = item.Subject;
+            existing.SizeBytes = item.SizeBytes;
+            existing.ReceivedLocal = item.ReceivedLocal;
+            existing.SentLocal = item.SentLocal;
+            existing.IsRead = item.IsRead;
+            existing.ArchivePath = item.ArchivePath;
+            _items.Update(existing);
+        }
     }
 
     public void Save(ItemDocument item)
     {
-        _items.Update(item);
+        lock (_gate)
+        {
+            _items.Update(item);
+        }
     }
 
     public IReadOnlyList<ItemDocument> GetPending(
@@ -77,22 +93,25 @@ public sealed class LiteDbManifest : IDisposable
         int limit,
         bool newest)
     {
-        var query = _items.Find(x =>
-            x.State == ItemState.Discovered ||
-            x.State == ItemState.Exported ||
-            x.State == ItemState.Importing ||
-            x.State == ItemState.Failed);
-
-        if (!string.IsNullOrWhiteSpace(mailboxId))
+        lock (_gate)
         {
-            query = query.Where(x => x.MailboxId.Equals(mailboxId, StringComparison.OrdinalIgnoreCase));
+            var query = _items.Find(x =>
+                x.State == ItemState.Discovered ||
+                x.State == ItemState.Exported ||
+                x.State == ItemState.Importing ||
+                x.State == ItemState.Failed);
+
+            if (!string.IsNullOrWhiteSpace(mailboxId))
+            {
+                query = query.Where(x => x.MailboxId.Equals(mailboxId, StringComparison.OrdinalIgnoreCase));
+            }
+
+            var ordered = newest
+                ? query.OrderByDescending(x => x.ReceivedLocal).ThenBy(x => x.DavidId)
+                : query.OrderBy(x => x.ReceivedLocal).ThenBy(x => x.DavidId);
+
+            return limit > 0 ? ordered.Take(limit).ToList() : ordered.ToList();
         }
-
-        var ordered = newest
-            ? query.OrderByDescending(x => x.ReceivedLocal).ThenBy(x => x.DavidId)
-            : query.OrderBy(x => x.ReceivedLocal).ThenBy(x => x.DavidId);
-
-        return limit > 0 ? ordered.Take(limit).ToList() : ordered.ToList();
     }
 
     public HashSet<string> GetPendingKeys(
@@ -100,61 +119,76 @@ public sealed class LiteDbManifest : IDisposable
         int limit,
         bool newest)
     {
-        var query = _items.Find(x =>
-            x.State == ItemState.Discovered ||
-            x.State == ItemState.Exported ||
-            x.State == ItemState.Importing ||
-            x.State == ItemState.Failed);
-
-        if (!string.IsNullOrWhiteSpace(mailboxId))
+        lock (_gate)
         {
-            query = query.Where(x => x.MailboxId.Equals(mailboxId, StringComparison.OrdinalIgnoreCase));
+            var query = _items.Find(x =>
+                x.State == ItemState.Discovered ||
+                x.State == ItemState.Exported ||
+                x.State == ItemState.Importing ||
+                x.State == ItemState.Failed);
+
+            if (!string.IsNullOrWhiteSpace(mailboxId))
+            {
+                query = query.Where(x => x.MailboxId.Equals(mailboxId, StringComparison.OrdinalIgnoreCase));
+            }
+
+            var ordered = newest
+                ? query.OrderByDescending(x => x.ReceivedLocal).ThenBy(x => x.DavidId)
+                : query.OrderBy(x => x.ReceivedLocal).ThenBy(x => x.DavidId);
+
+            var keys = limit > 0
+                ? ordered.Take(limit).Select(x => x.Key)
+                : ordered.Select(x => x.Key);
+
+            return keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
         }
-
-        var ordered = newest
-            ? query.OrderByDescending(x => x.ReceivedLocal).ThenBy(x => x.DavidId)
-            : query.OrderBy(x => x.ReceivedLocal).ThenBy(x => x.DavidId);
-
-        var keys = limit > 0
-            ? ordered.Take(limit).Select(x => x.Key)
-            : ordered.Select(x => x.Key);
-
-        return keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
     public IReadOnlyList<ItemDocument> GetAll(string? mailboxId = null)
     {
-        return string.IsNullOrWhiteSpace(mailboxId)
-            ? _items.FindAll().ToList()
-            : _items.Find(x => x.MailboxId == mailboxId).ToList();
+        lock (_gate)
+        {
+            return string.IsNullOrWhiteSpace(mailboxId)
+                ? _items.FindAll().ToList()
+                : _items.Find(x => x.MailboxId == mailboxId).ToList();
+        }
     }
 
     public ManifestSummary GetSummary(string? mailboxId = null)
     {
-        var all = string.IsNullOrWhiteSpace(mailboxId)
-            ? _items.FindAll().ToList()
-            : _items.Find(x => x.MailboxId == mailboxId).ToList();
-
-        return new ManifestSummary
+        lock (_gate)
         {
-            Discovered = all.Count(x => x.State == ItemState.Discovered),
-            Exported = all.Count(x => x.State == ItemState.Exported),
-            Importing = all.Count(x => x.State == ItemState.Importing),
-            Imported = all.Count(x => x.State == ItemState.Imported),
-            Failed = all.Count(x => x.State == ItemState.Failed),
-            Skipped = all.Count(x => x.State == ItemState.Skipped)
-        };
+            var all = string.IsNullOrWhiteSpace(mailboxId)
+                ? _items.FindAll().ToList()
+                : _items.Find(x => x.MailboxId == mailboxId).ToList();
+
+            return new ManifestSummary
+            {
+                Discovered = all.Count(x => x.State == ItemState.Discovered),
+                Exported = all.Count(x => x.State == ItemState.Exported),
+                Importing = all.Count(x => x.State == ItemState.Importing),
+                Imported = all.Count(x => x.State == ItemState.Imported),
+                Failed = all.Count(x => x.State == ItemState.Failed),
+                Skipped = all.Count(x => x.State == ItemState.Skipped)
+            };
+        }
     }
 
     public void Backup(string backupPath)
     {
-        _database.Checkpoint();
-        File.Copy(_path, backupPath, overwrite: true);
+        lock (_gate)
+        {
+            _database.Checkpoint();
+            File.Copy(_path, backupPath, overwrite: true);
+        }
     }
 
     public void Dispose()
     {
-        _database.Checkpoint();
-        _database.Dispose();
+        lock (_gate)
+        {
+            _database.Checkpoint();
+            _database.Dispose();
+        }
     }
 }
