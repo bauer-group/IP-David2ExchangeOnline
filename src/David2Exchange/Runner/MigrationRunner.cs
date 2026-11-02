@@ -679,7 +679,12 @@ public sealed class MigrationRunner
         }
 
         var to = mailbox.Target.Upn;
-        var subject = item.Subject ?? $"[David {kind}] {item.Id}";
+        var faxNumber = type == "3" ? Get("To") : "";
+        var subject = !string.IsNullOrWhiteSpace(item.Subject)
+            ? item.Subject
+            : type == "3" && !string.IsNullOrWhiteSpace(faxNumber)
+                ? $"Fax {faxNumber}"
+                : $"[David {kind}] {item.Id}";
         var body = Get("BodyText");
         var html = Get("BodyHtml");
         var date = item.ReceivedLocal ?? DateTime.Now;
@@ -702,9 +707,24 @@ public sealed class MigrationRunner
                 "attachments",
                 Sanitize(item.Id));
             Directory.CreateDirectory(faxDirectory);
-            var faxPath = Path.Combine(faxDirectory, "fax.tif");
-            File.WriteAllBytes(faxPath, faxImage);
-            attachments.Add(("fax.tif", faxPath));
+
+            var faxLabel = string.IsNullOrWhiteSpace(faxNumber)
+                ? Sanitize(item.Id)
+                : Sanitize(faxNumber);
+            var pdfPath = Path.Combine(
+                faxDirectory,
+                $"fax-{faxLabel}-{date:yyyyMMdd-HHmm}.pdf");
+
+            if (FaxPdfConverter.TryConvertTiffToPdf(faxImage, pdfPath, out _))
+            {
+                attachments.Add((Path.GetFileName(pdfPath), pdfPath));
+            }
+            else
+            {
+                var tiffPath = Path.Combine(faxDirectory, $"fax-{faxLabel}.tif");
+                File.WriteAllBytes(tiffPath, faxImage);
+                attachments.Add((Path.GetFileName(tiffPath), tiffPath));
+            }
         }
 
         if (item.Attachments.Count > 0)

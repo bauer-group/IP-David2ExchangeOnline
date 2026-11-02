@@ -158,6 +158,7 @@ public sealed class EwsOutputTarget : IOutputTarget
             {
                 group = (folder, new List<OutputItem>());
                 mailGroups[folder.Id.UniqueId] = group;
+                Console.WriteLine($"  ZIEL {item.FolderPath,-20} -> {folder.DisplayName}");
             }
 
             group.Items.Add(item);
