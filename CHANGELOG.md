@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.4.3](https://github.com/bauer-group/IP-David2Exchange/compare/v0.4.2...v0.4.3) (2026-11-02)
+
+### 🐛 Bug Fixes
+
+* **migration:** extract mail body, protect non-mail export and type calendar folders ([8a9b15c](https://github.com/bauer-group/IP-David2Exchange/commit/8a9b15cd5ed8280f2c0de9a9b698d2de87ac54fb))
+
 ## [0.4.2](https://github.com/bauer-group/IP-David2Exchange/compare/v0.4.1...v0.4.2) (2026-11-02)
 
 ### 🐛 Bug Fixes
