@@ -210,7 +210,9 @@ Schedule via Task Scheduler under the David run user. Always run `setup --check`
 
 ### Performance
 
-- David export remains single-threaded (DvApi/COM is STA-bound) and fills the queue.
+- David export remains single-threaded (DvApi/COM is STA-bound) and fills a bounded queue.
+- At most **80 exported items** are held in memory; the queue is flushed in 10-item EWS batches.
+- The full mailbox is never loaded into memory; only pending manifest keys are kept.
 - EWS imports are sent in batches of **10** items (Microsoft EWS limit).
 - Up to **8 EWS workers** import batches in parallel, each with its own `ExchangeService`.
 - EWS request timeout is **60 seconds**.

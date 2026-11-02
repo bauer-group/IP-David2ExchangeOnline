@@ -136,6 +136,7 @@ mailboxes:
 - **Voice:** wird als Mail mit der Original-WAV-Datei als Anhang migriert. Es wird **keine Transkription** erzeugt.
 - **Fax:** liest bei **entpackten** Archiven das Original-TIFF aus `FaxItem.Image`, konvertiert es in ein mehrseitiges PDF und benennt es `fax-<faxnummer>-<datum>.pdf`. Wenn David keinen Betreff liefert, wird `[FAX] <faxnummer>` bzw. `[FAX]` als Betreff verwendet. Bei **gepackten** Archiven existiert der Image-Pfad nicht; das Item bleibt `failed`, es wird keine Text-EML erzeugt. Vorher Archive mit `david2exchange unpack` entpacken und die David-Bereinigung laufen lassen; siehe [UNPACK.md](UNPACK.md).
 - **EWS-Batches:** maximal 10 Items pro `CreateItems`-Aufruf, 60 s Timeout, 8 parallele Worker. Throttling wird mit Backoff/Jitter und EWS-`BackOffMilliseconds` wiederholt; fehlgeschlagene Batch-Items werden einzeln nachgezogen.
+- **Speicher:** Es werden maximal 80 exportierte Items im Speicher gehalten; das Postfach wird nicht komplett geladen. Nur die offenen Manifest-Keys liegen als HashSet vor.
 - **Staging-Aufräumen:** Nach erfolgreichem Import werden EML und Anhänge aus `eml-stage` gelöscht. Beim Start werden Staging-Dateien bereits importierter Items ebenfalls entfernt. Fehlgeschlagene Items behalten ihre Staging-Dateien für den Retry.
 - **Mehrere Quellen auf ein Ziel:** erlaubt; `id` muss eindeutig sein.
 - **Typen:** 1 = Adresse/Kontakt, 2 = Mail, 3 = Fax, 4 = SMS, 5 = Voice, 6 = Chat/TMail, 7 = Kalender, 12 = Aufgabe. Der Lokal-Export schreibt alle unterstützten Typen; EWS erzeugt Mail, Termin, Kontakt oder Aufgabe.
