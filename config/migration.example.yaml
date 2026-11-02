@@ -22,7 +22,7 @@ staging:
   logs: .\logs
 
 limits:
-  limit: 10                        # Testlauf; 0 = alle
+  limit: 0                         # 0 = alle; >0 nur für Testläufe
   retries: 3
 
 mailboxes:

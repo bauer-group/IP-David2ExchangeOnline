@@ -100,7 +100,7 @@ Relative paths in `migration.yaml` resolve from the config folder. The default c
 .\david2exchange.exe report --config migration.yaml --out data\report.html
 ```
 
-`--limit` is a test guard. Without `--limit`, `limits.limit` from `migration.yaml` applies (10 in the example). Use `--all` or `limits.limit: 0` for a complete/delta run over all pending items.
+`--limit` is a test guard. Without `--limit`, `limits.limit` from `migration.yaml` applies. The example uses `0` (all); a value >0 limits the run. Use `--all` to override a configured limit.
 
 ### Mapping fallbacks
 

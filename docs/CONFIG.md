@@ -86,7 +86,7 @@ staging:
   logs: .\logs
 
 limits:
-  limit: 10                            # Standard; 0 = alle; --all überschreibt
+  limit: 0                             # 0 = alle; >0 nur für Testläufe; --all überschreibt
   retries: 3
 
 mailboxes:
