@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.5.2](https://github.com/bauer-group/IP-David2Exchange/compare/v0.5.1...v0.5.2) (2026-11-02)
+
+### 🐛 Bug Fixes
+
+* **mailboxes:** set shared mailbox sign-in name to target UPN ([39ff91b](https://github.com/bauer-group/IP-David2Exchange/commit/39ff91b336f619f34313dc31078dc1a0d13d716c))
+
 ## [0.5.1](https://github.com/bauer-group/IP-David2Exchange/compare/v0.5.0...v0.5.1) (2026-11-02)
 
 ### 🐛 Bug Fixes
