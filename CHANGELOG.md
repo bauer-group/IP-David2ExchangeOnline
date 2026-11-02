@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.9.1](https://github.com/bauer-group/IP-David2Exchange/compare/v0.9.0...v0.9.1) (2026-11-02)
+
+### 🐛 Bug Fixes
+
+* **staging:** delete EML and attachments after successful import ([f99f2da](https://github.com/bauer-group/IP-David2Exchange/commit/f99f2dadd34d56aa599c86299c18af87b5d99e30))
+
 ## [0.9.0](https://github.com/bauer-group/IP-David2Exchange/compare/v0.8.1...v0.9.0) (2026-11-02)
 
 ### 🚀 Features
