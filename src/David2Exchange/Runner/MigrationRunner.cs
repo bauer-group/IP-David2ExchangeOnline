@@ -193,6 +193,7 @@ public sealed class MigrationRunner
                             await ProcessItemAsync(
                                 manifest,
                                 mailbox,
+                                config.David.ArchiveRoot,
                                 item,
                                 archivePath,
                                 folderPath,
@@ -358,6 +359,7 @@ public sealed class MigrationRunner
     private static async Task ProcessItemAsync(
         LiteDbManifest manifest,
         MailboxMapping mailbox,
+        string archiveRoot,
         IDavidItem item,
         string archivePath,
         string folderPath,
@@ -419,6 +421,7 @@ public sealed class MigrationRunner
                                 emlPath,
                                 item,
                                 mailbox,
+                                archiveRoot,
                                 document.ItemType,
                                 emlStageDirectory,
                                 out var syntheticError))
@@ -439,6 +442,7 @@ public sealed class MigrationRunner
                             emlPath,
                             item,
                             mailbox,
+                            archiveRoot,
                             document.ItemType,
                             emlStageDirectory,
                             out var syntheticError))
@@ -601,6 +605,7 @@ public sealed class MigrationRunner
         string path,
         IDavidItem item,
         MailboxMapping mailbox,
+        string archiveRoot,
         string type,
         string stageDirectory,
         out string? error)
@@ -626,6 +631,14 @@ public sealed class MigrationRunner
 
         var attachments = new List<(string Name, string Path)>();
         var faxImage = item.FaxImage;
+        if (faxImage is null && !string.IsNullOrWhiteSpace(item.FaxImagePath))
+        {
+            var resolvedFaxPath = ResolveArchivePath(item.FaxImagePath, archiveRoot);
+            if (File.Exists(resolvedFaxPath))
+            {
+                faxImage = File.ReadAllBytes(resolvedFaxPath);
+            }
+        }
 
         if (type == "3" && item.Attachments.Count == 0 && faxImage is { Length: > 0 })
         {
@@ -727,6 +740,25 @@ public sealed class MigrationRunner
 
         File.WriteAllText(path, builder.ToString(), new UTF8Encoding(false));
         return true;
+    }
+
+    private static string ResolveArchivePath(string path, string archiveRoot)
+    {
+        if (File.Exists(path) || string.IsNullOrWhiteSpace(archiveRoot))
+        {
+            return path;
+        }
+
+        var normalized = path.Replace('/', '\\');
+        var marker = "\\archive\\";
+        var index = normalized.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (index < 0)
+        {
+            return path;
+        }
+
+        var relative = normalized[(index + marker.Length)..].TrimStart('\\');
+        return Path.Combine(archiveRoot, relative);
     }
 
     private static string MimeTypeFor(string fileName)

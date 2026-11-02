@@ -67,9 +67,19 @@ internal sealed class DavidComItem : IDavidItem
                 return null;
             }
 
-            // FaxItem.Image ist bei gepackten David-Archiven nur ein
-            // interner Containerpfad, keine direkt lesbare Datei.
-            return value as byte[];
+            if (value is byte[] bytes)
+            {
+                return bytes;
+            }
+
+            // Bei ungepackten Archiven ist Image ein realer TIFF-Pfad.
+            // Bei gepackten Archiven existiert die Datei nicht; dann null.
+            if (value is string path && File.Exists(path))
+            {
+                return File.ReadAllBytes(path);
+            }
+
+            return null;
         }
     }
 
