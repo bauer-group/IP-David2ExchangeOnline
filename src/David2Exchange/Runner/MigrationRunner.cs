@@ -121,6 +121,7 @@ public sealed class MigrationRunner
         }
 
         using var manifest = CreateManifest(config);
+        CleanupImportedStaging(manifest);
         var run = manifest.BeginRun("run", ToolInfo.Version);
 
         try
@@ -251,6 +252,7 @@ public sealed class MigrationRunner
                                     document.ImportedUtc = DateTime.UtcNow;
                                     document.LastError = null;
                                     manifest.Save(document);
+                                    CleanupStagedItem(result.Item);
                                     Console.WriteLine(
                                         $"  OK {result.Item.Id} · {result.Item.Subject}");
                                 }
@@ -930,6 +932,56 @@ public sealed class MigrationRunner
             .Replace("\r", " ", StringComparison.Ordinal)
             .Replace("\n", " ", StringComparison.Ordinal)
             .Trim();
+    }
+
+    private static void CleanupImportedStaging(LiteDbManifest manifest)
+    {
+        foreach (var document in manifest.GetAll()
+                     .Where(item =>
+                         item.State == ItemState.Imported &&
+                         !string.IsNullOrWhiteSpace(item.StagingPath)))
+        {
+            CleanupStagedPath(document.StagingPath, document.DavidId);
+        }
+    }
+
+    private static void CleanupStagedItem(OutputItem item)
+    {
+        CleanupStagedPath(item.StagedEmlPath, item.Id);
+    }
+
+    private static void CleanupStagedPath(string? path, string id)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+
+            var directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                var attachmentDirectory = Path.Combine(
+                    directory,
+                    "attachments",
+                    Sanitize(id));
+                if (Directory.Exists(attachmentDirectory))
+                {
+                    Directory.Delete(attachmentDirectory, recursive: true);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(
+                $"  WARNUNG Aufräumen {path}: {ex.Message}");
+        }
     }
 
     private static string Sanitize(string value)
