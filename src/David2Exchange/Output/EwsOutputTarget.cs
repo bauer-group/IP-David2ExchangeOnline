@@ -41,7 +41,9 @@ public sealed class EwsOutputTarget : IOutputTarget
         "david2exchange.ItemKey",
         MapiPropertyType.String);
 
-    private const int BatchSize = 10;
+    // Sicherheitsmodus: EWS-Batching ist deaktiviert. Jedes Item wird
+    // einzeln mit explizitem FolderId importiert; 8 Worker parallel.
+    private const int BatchSize = 1;
     private const int MaxRetries = 5;
     private const int BaseRetryDelayMs = 1_000;
     private const int MaxRetryDelayMs = 30_000;
