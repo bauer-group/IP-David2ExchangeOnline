@@ -727,8 +727,6 @@ public sealed class MigrationRunner
             builder.AppendLine("Content-Type: text/plain; charset=utf-8");
             builder.AppendLine();
             builder.AppendLine(body);
-            builder.AppendLine();
-            builder.AppendLine("[Migriert aus David. Originalformat konnte nicht als EML exportiert werden.]");
         }
         else
         {
@@ -739,8 +737,6 @@ public sealed class MigrationRunner
             builder.AppendLine("Content-Type: text/plain; charset=utf-8");
             builder.AppendLine();
             builder.AppendLine(body);
-            builder.AppendLine();
-            builder.AppendLine("[Migriert aus David. Originalformat inkl. Anhängen.]");
 
             foreach (var attachment in attachments)
             {

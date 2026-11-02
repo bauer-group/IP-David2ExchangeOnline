@@ -196,19 +196,6 @@ public sealed class EwsOutputTarget : IOutputTarget
         var end = GetDate(item, "StopTime")
                   ?? start.AddMinutes(30);
         var body = GetText(item, "BodyText") ?? "";
-        var attendees = GetText(item, "Attendees");
-        var recurring = GetBool(item, "IsRecurring") == true;
-
-        if (!string.IsNullOrWhiteSpace(attendees))
-        {
-            body += $"{Environment.NewLine}{Environment.NewLine}Teilnehmer: {attendees}";
-        }
-
-        if (recurring)
-        {
-            body = "[David-Serientermin – als Einzeltermin übernommen]" +
-                   Environment.NewLine + Environment.NewLine + body;
-        }
 
         var appointment = new Appointment(_service!)
         {
@@ -293,9 +280,7 @@ public sealed class EwsOutputTarget : IOutputTarget
         }
 
         var notes = GetText(item, "BodyText");
-        contact.Body = new MessageBody(
-            BodyType.Text,
-            string.IsNullOrWhiteSpace(notes) ? "Migriert aus David." : notes);
+        contact.Body = new MessageBody(BodyType.Text, notes ?? "");
 
         contact.SetExtendedProperty(ItemKeyProperty, BuildItemKey(item));
         try
