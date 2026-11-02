@@ -5,6 +5,8 @@ using System.Text;
 using System.Text.RegularExpressions;
 using Microsoft.Exchange.WebServices.Data;
 using Microsoft.Identity.Client;
+using EwsTask = Microsoft.Exchange.WebServices.Data.Task;
+using EwsTaskStatus = Microsoft.Exchange.WebServices.Data.TaskStatus;
 using Task = System.Threading.Tasks.Task;
 
 namespace David2Exchange.Output;
@@ -103,6 +105,9 @@ public sealed class EwsOutputTarget : IOutputTarget
             case "contact":
                 await CreateContactAsync(item, folder, cancellationToken);
                 break;
+            case "task":
+                await CreateTaskAsync(item, folder, cancellationToken);
+                break;
             default:
                 await ImportMailAsync(item, folder, cancellationToken);
                 break;
@@ -196,11 +201,14 @@ public sealed class EwsOutputTarget : IOutputTarget
         var end = GetDate(item, "StopTime")
                   ?? start.AddMinutes(30);
         var body = GetText(item, "BodyText") ?? "";
+        var html = GetText(item, "BodyHtml");
 
         var appointment = new Appointment(_service!)
         {
             Subject = item.Subject ?? "(Termin)",
-            Body = new MessageBody(BodyType.Text, body),
+            Body = string.IsNullOrWhiteSpace(html)
+                ? new MessageBody(BodyType.Text, body)
+                : new MessageBody(BodyType.HTML, html),
             Start = DateTime.SpecifyKind(start, DateTimeKind.Unspecified),
             End = DateTime.SpecifyKind(end, DateTimeKind.Unspecified),
             Location = GetText(item, "Location") ?? "",
@@ -280,7 +288,10 @@ public sealed class EwsOutputTarget : IOutputTarget
         }
 
         var notes = GetText(item, "BodyText");
-        contact.Body = new MessageBody(BodyType.Text, notes ?? "");
+        var html = GetText(item, "BodyHtml");
+        contact.Body = string.IsNullOrWhiteSpace(html)
+            ? new MessageBody(BodyType.Text, notes ?? "")
+            : new MessageBody(BodyType.HTML, html);
 
         contact.SetExtendedProperty(ItemKeyProperty, BuildItemKey(item));
         try
@@ -301,6 +312,92 @@ public sealed class EwsOutputTarget : IOutputTarget
         }
 
         _written++;
+    }
+
+    private async Task CreateTaskAsync(
+        OutputItem item,
+        Folder folder,
+        CancellationToken cancellationToken)
+    {
+        if (await ExistsByItemKeyAsync(item, folder, cancellationToken))
+        {
+            _alreadyPresent++;
+            return;
+        }
+
+        var body = GetText(item, "BodyText") ?? "";
+        var html = GetText(item, "BodyHtml");
+        var start = GetDate(item, "StartTime");
+        var due = GetDate(item, "DueDate") ?? GetDate(item, "StopTime");
+        var status = GetText(item, "Status");
+        var priority = GetText(item, "Priority");
+        var percent = GetInt(item, "PercentComplete");
+        var completed = GetBool(item, "Completed") == true ||
+                        GetBool(item, "IsComplete") == true;
+
+        var task = new EwsTask(_service!)
+        {
+            Subject = item.Subject ?? "(Aufgabe)",
+            Body = string.IsNullOrWhiteSpace(html)
+                ? new MessageBody(BodyType.Text, body)
+                : new MessageBody(BodyType.HTML, html),
+            StartDate = start,
+            DueDate = due,
+            Status = completed ? EwsTaskStatus.Completed : MapTaskStatus(status),
+            Importance = MapImportance(priority),
+            PercentComplete = percent ?? (completed ? 100 : 0),
+            IsReminderSet = false
+        };
+
+        task.SetExtendedProperty(ItemKeyProperty, BuildItemKey(item));
+        try
+        {
+            await task.Save(folder.Id);
+        }
+        catch (ServiceResponseException)
+        {
+            var tasksRoot = await BindWellKnownAsync(
+                WellKnownFolderName.Tasks,
+                cancellationToken);
+            if (folder.Id.UniqueId == tasksRoot.Id.UniqueId)
+            {
+                throw;
+            }
+
+            await task.Save(tasksRoot.Id);
+        }
+
+        _written++;
+    }
+
+    private static EwsTaskStatus MapTaskStatus(string? status)
+    {
+        return status?.Trim().ToLowerInvariant() switch
+        {
+            "completed" or "erledigt" or "abgeschlossen" => EwsTaskStatus.Completed,
+            "inprogress" or "in progress" or "in bearbeitung" => EwsTaskStatus.InProgress,
+            "waiting" or "waitingonothers" or "wartet" => EwsTaskStatus.WaitingOnOthers,
+            "deferred" or "zurückgestellt" => EwsTaskStatus.Deferred,
+            _ => EwsTaskStatus.NotStarted
+        };
+    }
+
+    private static Importance MapImportance(string? priority)
+    {
+        return priority?.Trim().ToLowerInvariant() switch
+        {
+            "high" or "hoch" or "1" => Importance.High,
+            "low" or "niedrig" or "3" => Importance.Low,
+            _ => Importance.Normal
+        };
+    }
+
+    private static int? GetInt(OutputItem item, string key)
+    {
+        var text = GetText(item, key);
+        return int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value)
+            ? value
+            : null;
     }
 
     private async Task<Folder> GetTargetFolderAsync(
@@ -333,6 +430,19 @@ public sealed class EwsOutputTarget : IOutputTarget
                 "contacts",
                 cancellationToken,
                 "IPF.Contact");
+        }
+
+        if (item.Kind == "task")
+        {
+            var tasks = await BindWellKnownAsync(
+                WellKnownFolderName.Tasks,
+                cancellationToken);
+            return await EnsureSubfoldersAsync(
+                tasks,
+                RemoveRoot(segments, "todo", "tasks", "aufgaben"),
+                "tasks",
+                cancellationToken,
+                "IPF.Task");
         }
 
         var inbox = await BindWellKnownAsync(

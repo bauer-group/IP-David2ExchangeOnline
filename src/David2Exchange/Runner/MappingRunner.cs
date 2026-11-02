@@ -65,7 +65,7 @@ public static class MappingRunner
         {
             mapping.Include.AddRange(new[]
             {
-                "mail", "fax", "sms", "voice", "chat", "calendar", "contacts"
+                "mail", "fax", "sms", "voice", "chat", "calendar", "contacts", "tasks"
             });
         }
 

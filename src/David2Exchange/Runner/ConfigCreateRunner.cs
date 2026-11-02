@@ -183,7 +183,7 @@ public static class ConfigCreateRunner
                 },
                 Include = new List<string>
                 {
-                    "mail", "fax", "sms", "voice", "chat", "calendar", "contacts"
+                    "mail", "fax", "sms", "voice", "chat", "calendar", "contacts", "tasks"
                 },
                 ExcludeArchives = new List<string>()
             });
@@ -241,7 +241,7 @@ public static class ConfigCreateRunner
                 },
                 Include = new List<string>
                 {
-                    "mail", "fax", "sms", "voice", "chat", "calendar", "contacts"
+                    "mail", "fax", "sms", "voice", "chat", "calendar", "contacts", "tasks"
                 },
                 ExcludeArchives = new List<string> { "ADDRESS", "#001#Adressen" }
             });

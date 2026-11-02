@@ -16,8 +16,9 @@ internal sealed class DavidComItem : IDavidItem
         "Viewed", "Read", "IsRead", "Gelesen",
         "Flags", "Attachments", "From", "To", "CC", "Folder", "Archive",
         "BodyText", "TextSource",
-        "StartTime", "StopTime", "Location", "AllDayEvent", "IsRecurring",
+        "StartTime", "StopTime", "DueDate", "Location", "AllDayEvent", "IsRecurring",
         "Attendees", "Recipients", "VCard",
+        "Status", "Priority", "PercentComplete", "Completed", "IsComplete", "Reminder",
         "DisplayName", "FirstName", "LastName", "CompanyName", "Department",
         "JobTitle", "FileAs", "EMail", "Email", "PhoneNumber", "FaxNumber", "SMSNumber"
     };

@@ -30,6 +30,6 @@ public static class DavidItemTypes
 
     public static bool IsSupported(string type)
     {
-        return IsMailLike(type) || type is "1" or "7";
+        return IsMailLike(type) || type is "1" or "7" or "12";
     }
 }
