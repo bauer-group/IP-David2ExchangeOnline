@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.9.0](https://github.com/bauer-group/IP-David2Exchange/compare/v0.8.1...v0.9.0) (2026-11-02)
+
+### 🚀 Features
+
+* **fax:** use A4 pages and PDF document metadata ([045d7fa](https://github.com/bauer-group/IP-David2Exchange/commit/045d7fafd34c3da1bd489ef92e936659d2949cf6))
+
 ## [0.8.1](https://github.com/bauer-group/IP-David2Exchange/compare/v0.8.0...v0.8.1) (2026-11-02)
 
 ### 🐛 Bug Fixes
