@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.4.5](https://github.com/bauer-group/IP-David2Exchange/compare/v0.4.4...v0.4.5) (2026-11-02)
+
+### 🐛 Bug Fixes
+
+* **fax:** do not read packed David images through UNC ([1e64da9](https://github.com/bauer-group/IP-David2Exchange/commit/1e64da911c1da8c4d0113eb4df86b24d69d5aa22))
+
 ## [0.4.4](https://github.com/bauer-group/IP-David2Exchange/compare/v0.4.3...v0.4.4) (2026-11-02)
 
 ### 🐛 Bug Fixes
