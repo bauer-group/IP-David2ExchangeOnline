@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.9.3](https://github.com/bauer-group/IP-David2Exchange/compare/v0.9.2...v0.9.3) (2026-11-02)
+
+### 🐛 Bug Fixes
+
+* **ews:** use 10-item batches and retry throttling ([97e7fa8](https://github.com/bauer-group/IP-David2Exchange/commit/97e7fa80ec85a813fdadc23ec74c9ab1bbba2855))
+
 ## [0.9.2](https://github.com/bauer-group/IP-David2Exchange/compare/v0.9.1...v0.9.2) (2026-11-02)
 
 ### 🐛 Bug Fixes
