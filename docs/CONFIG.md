@@ -104,7 +104,7 @@ mailboxes:
       alias: karl.bauer
       aliases: []                      # zusätzliche SMTP-Adressen
       createIfMissing: false           # Shared Mailbox bei Bedarf anlegen
-    include: [mail, fax, sms, voice, chat, calendar, contacts]  # alle unterstützten Typen
+    include: [mail, fax, sms, voice, chat, calendar, contacts, tasks]  # alle unterstützten Typen
     excludeArchives: []                # Teilbäume, z. B. ["ADDRESS"]
 
   - id: unverteilt
@@ -129,7 +129,7 @@ mailboxes:
 - **`target.aliases`:** zusätzliche SMTP-Adressen, die beim Anlegen/Ergänzen gesetzt werden.
 - **`target.createIfMissing`:** nur für Shared Mailboxes automatisch; User-Mailboxes werden nicht automatisch lizenziert.
 - **Zielordner:** Exchange-Spezialordner werden über `WellKnownFolderName` gebunden, nicht über lokalisierte Anzeigenamen. Die David-Quelle wird über den numerischen `DvArchiveTypes`-Wert klassifiziert.
-- **`include`:** steuert die Typen. `mail`, `fax`, `sms`, `voice`, `chat`, `calendar`, `contacts` oder `all`. Fehlt der Typ, wird das Item bewusst als `skipped` geführt.
+- **`include`:** steuert die Typen. `mail`, `fax`, `sms`, `voice`, `chat`, `calendar`, `contacts`, `tasks` oder `all`. Fehlt der Typ, wird das Item bewusst als `skipped` geführt.
 - **EML-Präferenz:** Mail, Fax, SMS, Chat und Voice werden zuerst über `DVEmlFromMailItem` als originale David-EML exportiert. Nur wenn das fehlschlägt, greift der typabhängige Fallback. Bei Mail werden dabei Header, Text und Anhänge in eine generische EML geschrieben, statt das Item fehlschlagen zu lassen. Der Fallback hängt **keinen** Provenienztext an den Body; die Nachricht bleibt inhaltlich unverändert. Liefert David HTML, wird `multipart/alternative` mit `text/plain` und `text/html` erzeugt, damit die Formatierung erhalten bleibt.
 - **Voice:** wird als Mail mit der Original-WAV-Datei als Anhang migriert. Es wird **keine Transkription** erzeugt.
 - **Fax:** bevorzugt den vollständigen David-EML-Export inkl. aller Header. Ist der nicht verfügbar, wird eine Multipart-EML mit dem Original-Faxbild als Anhang erzeugt – niemals eine reine Text-EML. Fehlt auch der Faxbild-Anhang, bleibt das Item als `failed` sichtbar. Vorher Archive mit `david2exchange unpack` entpacken und die David-Bereinigung laufen lassen; siehe [UNPACK.md](UNPACK.md).

@@ -135,8 +135,9 @@ Fax images: for **unpacked** David archives, `FaxItem.Image` is a real TIFF path
 | SMS | yes | yes | David EML first; text/attachment fallback only if that fails |
 | Chat | yes | yes | David EML first; text/attachment fallback only if that fails |
 | Voice | yes | yes | David EML with the original WAV first; WAV-preserving fallback; **no transcription** |
-| Calendar | yes | yes | EWS Appointment; recurring series currently as single appointment with note |
-| Contacts | yes | yes | EWS Contact field mapping (name, e-mail, phone, fax, mobile, notes) |
+| Calendar | yes | yes | EWS Appointment with HTML body; recurring series currently as single appointment |
+| Contacts | yes | yes | EWS Contact field mapping (name, e-mail, phone, fax, mobile, notes) with HTML body |
+| Tasks | yes | yes | EWS Task with subject, HTML/plain body, start/due date, status, priority, percent complete |
 | Folder tree | yes | yes | Inbox/Sent/Calendar/Contacts plus source subfolders |
 | Read state | yes | yes | mail only |
 | Deletions/moves in target | – | no | deliberately not synchronized |
