@@ -187,7 +187,7 @@ Erwartet: App, Zertifikat, Allowlist und Canary-Bind grün. Bei `403`/`ErrorAcce
 Das Skript:
 
 - verbindet interaktiv mit Exchange Online,
-- legt fehlende **Shared Mailboxes** an,
+- legt fehlende **Shared Mailboxes** an und setzt den Anmeldenamen auf die Mailadresse (`-MicrosoftOnlineServicesID`),
 - setzt `target.aliases`,
 - vergibt `FullAccess` ohne Auto-Mapping an den Admin,
 - unterstützt `--dry-run`.
@@ -201,7 +201,8 @@ New-Mailbox -Shared `
   -Name "BAUER GROUP [SG]" `
   -DisplayName "BAUER GROUP [SG]" `
   -Alias "info-sg" `
-  -PrimarySmtpAddress info@sg.example.com
+  -PrimarySmtpAddress info@sg.example.com `
+  -MicrosoftOnlineServicesID info@sg.example.com
 
 Add-MailboxPermission `
   -Identity info@sg.example.com `
