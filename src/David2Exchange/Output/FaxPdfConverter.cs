@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 using System.Drawing;
 using System.Drawing.Imaging;
-using PdfSharp.Drawing;
-using PdfSharp.Pdf;
+using PdfSharpCore.Drawing;
+using PdfSharpCore.Pdf;
 
 namespace David2Exchange.Output;
 
@@ -58,7 +58,7 @@ internal static class FaxPdfConverter
                 page.Height = XUnit.FromMillimeter(297);
 
                 using var graphics = XGraphics.FromPdfPage(page);
-                using var xImage = XImage.FromStream(png);
+                using var xImage = XImage.FromStream(() => png);
 
                 var pageWidth = page.Width.Point;
                 var pageHeight = page.Height.Point;
