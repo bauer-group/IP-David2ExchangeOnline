@@ -7,7 +7,13 @@ namespace David2Exchange.Source.David;
 internal static class DvApiNative
 {
     // Signatur aus dem Konzept: int (nicht long), Erfolg != 0, Pfad im Puffer.
-    [DllImport("DvApi32.dll", CharSet = CharSet.Ansi, SetLastError = true)]
+    [DllImport(
+        "DvApi32.dll",
+        EntryPoint = "DVEmlFromMailItem",
+        ExactSpelling = true,
+        CharSet = CharSet.Ansi,
+        CallingConvention = CallingConvention.StdCall,
+        SetLastError = true)]
     private static extern int DVEmlFromMailItem(
         [MarshalAs(UnmanagedType.IDispatch)] object mailItem,
         StringBuilder path);
@@ -18,7 +24,7 @@ internal static class DvApiNative
 
         try
         {
-            var buffer = new StringBuilder(1024);
+            var buffer = new StringBuilder(260);
             var result = DVEmlFromMailItem(item, buffer);
             if (result == 0)
             {
@@ -26,7 +32,7 @@ internal static class DvApiNative
                 return false;
             }
 
-            var produced = buffer.ToString().Trim().Trim('"');
+            var produced = buffer.ToString().Trim('\0', ' ', '"');
             if (string.IsNullOrWhiteSpace(produced))
             {
                 produced = destination;

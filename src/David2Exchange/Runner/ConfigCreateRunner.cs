@@ -69,7 +69,7 @@ public static class ConfigCreateRunner
                 MigrationAdminUpn = options.AdminUpn,
                 ProvenanceDomain = domain
             },
-            Limits = new LimitsConfig { Limit = 10 },
+            Limits = new LimitsConfig { Limit = 0 },
             Staging = new StagingConfig
             {
                 Root = @".\data",

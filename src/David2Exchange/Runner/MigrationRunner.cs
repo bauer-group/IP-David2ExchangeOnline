@@ -26,6 +26,12 @@ public sealed class MigrationRunner
             session.Logon(config.David.Logon);
 
             var limit = options.Limit >= 0 ? options.Limit : config.Limits.Limit;
+            if (limit > 0)
+            {
+                Console.WriteLine(
+                    $"HINWEIS: limits.limit={limit} aktiv; nur {limit} Items. " +
+                    "Für alle Items --all verwenden.");
+            }
 
             foreach (var mailbox in SelectMailboxes(config, options.MailboxId, options.Wave))
             {
