@@ -3,6 +3,13 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.9.5](https://github.com/bauer-group/IP-David2Exchange/compare/v0.9.4...v0.9.5) (2026-11-02)
+
+### 🐛 Bug Fixes
+
+* **ews:** verify batch results and retry missing items ([b1547c2](https://github.com/bauer-group/IP-David2Exchange/commit/b1547c217ca66c2f49ba15d986c2cef5286a3507))
+* **fax:** use license-free PdfSharpCore for PDF conversion ([30c72e4](https://github.com/bauer-group/IP-David2Exchange/commit/30c72e40982a0cdd9dcf05234e8949a6c4833c72))
+
 ## [0.9.4](https://github.com/bauer-group/IP-David2Exchange/compare/v0.9.3...v0.9.4) (2026-11-02)
 
 ### 🐛 Bug Fixes
