@@ -269,13 +269,26 @@ public sealed class EwsOutputTarget : IOutputTarget
                 {
                     Interlocked.Increment(ref _written);
                     results.Add(new OutputResult(item, true, null));
+                    continue;
                 }
-                else
+
+                var batchError = i < responses.Count
+                    ? $"{responses[i].Result}: {responses[i].ErrorMessage}"
+                    : "Keine ServiceResponse";
+
+                // Ein fehlgeschlagener Batch darf keine Items verschlucken.
+                // Deshalb wird das Item einzeln nachgezogen.
+                try
                 {
-                    var error = i < responses.Count
-                        ? $"{responses[i].Result}: {responses[i].ErrorMessage}"
-                        : "Keine ServiceResponse";
-                    results.Add(new OutputResult(item, false, error));
+                    await WriteItemAsync(item, cancellationToken);
+                    results.Add(new OutputResult(item, true, null));
+                }
+                catch (Exception ex)
+                {
+                    results.Add(new OutputResult(
+                        item,
+                        false,
+                        $"{batchError}; Einzelimport: {ex.Message}"));
                 }
             }
         }
@@ -283,7 +296,18 @@ public sealed class EwsOutputTarget : IOutputTarget
         {
             foreach (var entry in pending)
             {
-                results.Add(new OutputResult(entry.Item, false, ex.Message));
+                try
+                {
+                    await WriteItemAsync(entry.Item, cancellationToken);
+                    results.Add(new OutputResult(entry.Item, true, null));
+                }
+                catch (Exception itemEx)
+                {
+                    results.Add(new OutputResult(
+                        entry.Item,
+                        false,
+                        $"Batch: {ex.Message}; Einzelimport: {itemEx.Message}"));
+                }
             }
         }
 
