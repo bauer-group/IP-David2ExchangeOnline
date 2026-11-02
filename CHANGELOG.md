@@ -3,6 +3,16 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.4.0](https://github.com/bauer-group/IP-David2Exchange/compare/v0.3.5...v0.4.0) (2026-11-02)
+
+### 🚀 Features
+
+* **config:** map common roots and unknown users to shared retention mailboxes ([9028a47](https://github.com/bauer-group/IP-David2Exchange/commit/9028a47933f0e53fa084ecbab0b7d78d7eb5fc6a))
+
+### 🐛 Bug Fixes
+
+* **targets:** keep device-code output out of JSON and add --out ([8a79842](https://github.com/bauer-group/IP-David2Exchange/commit/8a798426f33565e81da8b3ade0eedfe9da25e3ad))
+
 ## [0.3.5](https://github.com/bauer-group/IP-David2Exchange/compare/v0.3.4...v0.3.5) (2026-11-01)
 
 ### 🐛 Bug Fixes
