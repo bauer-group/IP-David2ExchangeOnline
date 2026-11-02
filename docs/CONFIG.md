@@ -19,7 +19,7 @@ david2exchange config create `
 
 `config create` listet alle David-Benutzerarchive und Unverteilt-/Common-Archive, liest die David-E-Mail-Adresse aus `User.Addresses` und matcht **ausschließlich über die E-Mail-Adresse** (primär oder Alias) gegen User- und Shared-Mailboxen. Anzeigenamen werden nicht als Match-Schlüssel verwendet.
 
-Nicht sicher zugeordnete Quellen werden mit `enabled: false` und leerem `target.upn` aufgenommen; sie werden nicht migriert, bis sie per `map` ergänzt wurden. `--wave <name>` setzt den Migrationsblock für alle erzeugten Einträge.
+Nicht sicher zugeordnete Benutzer werden als Shared-Retention-Mailbox mit `<david-id>@<domain>` bzw. der Quelladresse angelegt (`createIfMissing: true`). `user\00000000` wird mit `enabled: false` aufgenommen. `--wave <name>` setzt den Migrationsblock für alle erzeugten Einträge.
 
 Mapping-Report: `migration.mapping.json` (Quelle, Anzeigename, Ziel, Methode).
 
@@ -110,10 +110,12 @@ mailboxes:
   - id: unverteilt
     source:
       kind: common
-      archivePath: "common\\unverteilt"
+      archivePath: "COMMON"
     target:
-      upn: david-unverteilt@example.com
-    include: [mail]
+      upn: info@example.com
+      type: shared
+      createIfMissing: true
+    include: [mail, fax, sms, voice, chat, calendar, contacts, tasks]
     excludeArchives: ["ADDRESS", "#001#Adressen"]
 ```
 
@@ -121,8 +123,8 @@ mailboxes:
 
 - **`user\@me`** löst der Adapter über `Account.User.ID` auf (z. B. `user\1000C000`). Für die Migration besser den echten Pfad aus `sources` verwenden.
 - **Benutzerarchiv:** `user\<Hex-ID>`; die ID ist nicht die laufende Nummer. `sources` zeigt die korrekten Pfade.
-- **Unverteilt:** `common\unverteilt` enthält Adress-Teilarchive. `excludeArchives` oder `include: [mail]` verhindert, dass Typ 1 (Adresse) mitkommt.
-- **Shared Mailbox:** einfach die UPN der Shared Mailbox als `target.upn` eintragen. Das Tool legt keine Postfächer an.
+- **Unverteilt:** als **ein** Mapping mit `archivePath: COMMON` eintragen. Alle Common-Unterordner werden rekursiv unter dem Ziel abgebildet. `excludeArchives` verhindert Adress-Teilarchive.
+- **Shared Mailbox:** UPN als `target.upn` eintragen. `mailboxes ensure` legt fehlende Shared Mailboxes an und setzt den Anmeldenamen auf diese UPN.
 - **`enabled`:** `false` schließt den Eintrag aus; `config create` setzt es für nicht automatisch zugeordnete Quellen auf `false`. `map` setzt es beim Mapping wieder auf `true`.
 - **`wave`:** Gruppiert Postfächer in Migrationsblöcke. `discover/run/verify --wave <name>` bearbeitet nur diesen Block; pro Block kann auch eine eigene Config verwendet werden.
 - **`source.email`:** Pflicht für aktive Benutzerpostfächer; nur diese Adresse wird für das Mapping verwendet.
@@ -130,11 +132,11 @@ mailboxes:
 - **`target.createIfMissing`:** nur für Shared Mailboxes automatisch; User-Mailboxes werden nicht automatisch lizenziert.
 - **Zielordner:** Exchange-Spezialordner werden über `WellKnownFolderName` gebunden, nicht über lokalisierte Anzeigenamen. Die David-Quelle wird über den numerischen `DvArchiveTypes`-Wert klassifiziert.
 - **`include`:** steuert die Typen. `mail`, `fax`, `sms`, `voice`, `chat`, `calendar`, `contacts`, `tasks` oder `all`. Fehlt der Typ, wird das Item bewusst als `skipped` geführt.
-- **EML-Präferenz:** Mail, Fax, SMS, Chat und Voice werden zuerst über `DVEmlFromMailItem` als originale David-EML exportiert. Nur wenn das fehlschlägt, greift der typabhängige Fallback. Bei Mail werden dabei Header, Text und Anhänge in eine generische EML geschrieben, statt das Item fehlschlagen zu lassen. Der Fallback hängt **keinen** Provenienztext an den Body; die Nachricht bleibt inhaltlich unverändert. Liefert David HTML, wird `multipart/alternative` mit `text/plain` und `text/html` erzeugt, damit die Formatierung erhalten bleibt.
+- **EML-Verhalten:** Nur Mail (Typ 2) wird über `DVEmlFromMailItem` als originale David-EML exportiert. Fax/SMS/Chat/Voice werden nicht nativ über diese Funktion exportiert, weil sie keine `MailItem`-Objekte sind und der native Aufruf den Prozess beenden kann. Bei Mail wird bei Fehlschlag eine generische EML mit Headern, Text und Anhängen erzeugt; der Fallback hängt **keinen** Provenienztext an den Body. Liefert David HTML, wird `multipart/alternative` mit `text/plain` und `text/html` erzeugt.
 - **Voice:** wird als Mail mit der Original-WAV-Datei als Anhang migriert. Es wird **keine Transkription** erzeugt.
-- **Fax:** bevorzugt den vollständigen David-EML-Export inkl. aller Header. Ist der nicht verfügbar, wird eine Multipart-EML mit dem Original-Faxbild als Anhang erzeugt – niemals eine reine Text-EML. Fehlt auch der Faxbild-Anhang, bleibt das Item als `failed` sichtbar. Vorher Archive mit `david2exchange unpack` entpacken und die David-Bereinigung laufen lassen; siehe [UNPACK.md](UNPACK.md).
+- **Fax:** liest bei **entpackten** Archiven das Original-TIFF aus `FaxItem.Image` und hängt es als `fax.tif` an. Bei **gepackten** Archiven existiert der Image-Pfad nicht; das Item bleibt `failed`, es wird keine Text-EML erzeugt. Vorher Archive mit `david2exchange unpack` entpacken und die David-Bereinigung laufen lassen; siehe [UNPACK.md](UNPACK.md).
 - **Mehrere Quellen auf ein Ziel:** erlaubt; `id` muss eindeutig sein.
-- **Typen:** 1 = Adresse/Kontakt, 2 = Mail, 7 = Kalender (auf SRV-BAUER beobachtet). Der Lokal-Export schreibt derzeit Mail (Typ 2).
+- **Typen:** 1 = Adresse/Kontakt, 2 = Mail, 3 = Fax, 4 = SMS, 5 = Voice, 6 = Chat/TMail, 7 = Kalender, 12 = Aufgabe. Der Lokal-Export schreibt alle unterstützten Typen; EWS erzeugt Mail, Termin, Kontakt oder Aufgabe.
 
 ## 3. Quellen listen
 

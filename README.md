@@ -2,7 +2,7 @@
 
 Tobit David → Exchange Online migration tool for Windows x86. The tool runs on a workstation with the David client installed; it is not installed as a service.
 
-**Current status:** mail, fax, SMS, voice, chat, calendar, contacts and David folder hierarchy are implemented. Mail/fax/SMS/voice/chat use David's original EML export first (`DVEmlFromMailItem`), so original headers and attachments are preserved as far as possible. Only if that export fails does a type-specific fallback run: Fax uses the original image attachment, Voice preserves the WAV, SMS/chat use a metadata/text EML; calendar becomes an EWS appointment, contacts become EWS contacts. Messages are written into the existing target folders (`Inbox`, `Sent Items`, `Drafts`, `Deleted Items`, `Junk Email`, `Calendar`, `Contacts`, `Tasks`) and their subfolders. The David export path has been tested against a real server; the EWS path still needs a tenant end-to-end test. See [Supported content](#supported-content).
+**Current status:** mail, fax, SMS, voice, chat, calendar, contacts, tasks and David folder hierarchy are implemented. Mail uses David's original EML export (`DVEmlFromMailItem`) first; if that fails, a revision-safe HTML/plain fallback is generated. Fax uses the original TIFF from `FaxItem.Image` for unpacked archives; packed faxes fail visibly. SMS/chat/voice use attachment-preserving EML fallbacks. Calendar becomes an EWS appointment, contacts become EWS contacts, tasks become EWS tasks. Messages are written into the existing target folders (`Inbox`, `Sent Items`, `Drafts`, `Deleted Items`, `Junk Email`, `Calendar`, `Contacts`, `Tasks`) and their subfolders. The mail EWS path has been tested against a real tenant; calendar/task/contact EWS paths still need validation. See [Supported content](#supported-content).
 
 ## 1. Get the executable
 
@@ -130,11 +130,11 @@ Fax images: for **unpacked** David archives, `FaxItem.Image` is a real TIFF path
 
 | David content | Detection / probe | Migration | Notes |
 |---|---|---|---|
-| E-mails | yes | **yes** | David EML preferred; generic EML fallback with headers/attachments if David export fails |
-| Fax | yes | yes | **preferred:** complete David EML incl. all headers. Fallback: multipart EML with the original fax image attachment – never a text-only EML. If neither is possible, the item fails visibly. |
-| SMS | yes | yes | David EML first; text/attachment fallback only if that fails |
-| Chat | yes | yes | David EML first; text/attachment fallback only if that fails |
-| Voice | yes | yes | David EML with the original WAV first; WAV-preserving fallback; **no transcription** |
+| E-mails | yes | **yes** | David EML preferred; revision-safe HTML/plain fallback with attachments if David export fails |
+| Fax | yes | yes | Unpacked archive: original TIFF from `FaxItem.Image` as `fax.tif`. Packed archive: fails visibly; no text-only EML. |
+| SMS | yes | yes | Attachment-preserving EML fallback; no native `DVEmlFromMailItem` call |
+| Chat | yes | yes | Attachment-preserving EML fallback; no native `DVEmlFromMailItem` call |
+| Voice | yes | yes | EML with the original WAV attachment; **no transcription** |
 | Calendar | yes | yes | EWS Appointment with HTML body; recurring series currently as single appointment |
 | Contacts | yes | yes | EWS Contact field mapping (name, e-mail, phone, fax, mobile, notes) with HTML body |
 | Tasks | yes | yes | EWS Task with subject, HTML/plain body, start/due date, status, priority, percent complete |
