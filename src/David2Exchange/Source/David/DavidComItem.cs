@@ -250,6 +250,22 @@ internal sealed class DavidComItem : IDavidItem
         return scalar == "System.__ComObject" ? null : scalar;
     }
 
+    private static string? ResolveHtmlText(object? value)
+    {
+        if (value is null)
+        {
+            return null;
+        }
+
+        var html = ComHelpers.GetFirstString(value, "HTMLText", "HTML", "Html");
+        if (!string.IsNullOrWhiteSpace(html))
+        {
+            return html;
+        }
+
+        return null;
+    }
+
     private static string? ResolveAddressList(object? value)
     {
         if (value is null)
@@ -298,11 +314,27 @@ internal sealed class DavidComItem : IDavidItem
                 continue;
             }
 
+            if (name == "BodyText")
+            {
+                var plain = ResolveFormattedText(value);
+                if (!string.IsNullOrWhiteSpace(plain) && plain != "System.__ComObject")
+                {
+                    values["BodyText"] = plain;
+                }
+
+                var html = ResolveHtmlText(value);
+                if (!string.IsNullOrWhiteSpace(html) && html != "System.__ComObject")
+                {
+                    values["BodyHtml"] = html;
+                }
+
+                continue;
+            }
+
             var text = name switch
             {
                 "From" or "To" or "CC" => ResolveAddress(value),
                 "Attendees" or "Recipients" => ResolveAddressList(value),
-                "BodyText" => ResolveFormattedText(value),
                 _ => ComHelpers.ToScalarString(value)
             };
 

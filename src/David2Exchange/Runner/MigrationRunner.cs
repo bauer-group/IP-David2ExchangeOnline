@@ -646,6 +646,7 @@ public sealed class MigrationRunner
         var to = mailbox.Target.Upn;
         var subject = item.Subject ?? $"[David {kind}] {item.Id}";
         var body = Get("BodyText");
+        var html = Get("BodyHtml");
         var date = item.ReceivedLocal ?? DateTime.Now;
 
         var attachments = new List<(string Name, string Path)>();
@@ -722,11 +723,25 @@ public sealed class MigrationRunner
             return false;
         }
 
+        var hasHtml = !string.IsNullOrWhiteSpace(html);
+
         if (attachments.Count == 0)
         {
-            builder.AppendLine("Content-Type: text/plain; charset=utf-8");
-            builder.AppendLine();
-            builder.AppendLine(body);
+            if (hasHtml)
+            {
+                var alternative = "----david2exchange-alt-" + Guid.NewGuid().ToString("N");
+                builder.AppendLine($"Content-Type: multipart/alternative; boundary=\"{alternative}\"");
+                builder.AppendLine();
+                AppendTextPart(builder, alternative, "text/plain", body);
+                AppendTextPart(builder, alternative, "text/html", html);
+                builder.AppendLine($"--{alternative}--");
+            }
+            else
+            {
+                builder.AppendLine("Content-Type: text/plain; charset=utf-8");
+                builder.AppendLine();
+                builder.AppendLine(body);
+            }
         }
         else
         {
@@ -734,9 +749,22 @@ public sealed class MigrationRunner
             builder.AppendLine($"Content-Type: multipart/mixed; boundary=\"{boundary}\"");
             builder.AppendLine();
             builder.AppendLine($"--{boundary}");
-            builder.AppendLine("Content-Type: text/plain; charset=utf-8");
-            builder.AppendLine();
-            builder.AppendLine(body);
+
+            if (hasHtml)
+            {
+                var alternative = "----david2exchange-alt-" + Guid.NewGuid().ToString("N");
+                builder.AppendLine($"Content-Type: multipart/alternative; boundary=\"{alternative}\"");
+                builder.AppendLine();
+                AppendTextPart(builder, alternative, "text/plain", body);
+                AppendTextPart(builder, alternative, "text/html", html);
+                builder.AppendLine($"--{alternative}--");
+            }
+            else
+            {
+                builder.AppendLine("Content-Type: text/plain; charset=utf-8");
+                builder.AppendLine();
+                builder.AppendLine(body);
+            }
 
             foreach (var attachment in attachments)
             {
@@ -755,6 +783,19 @@ public sealed class MigrationRunner
 
         File.WriteAllText(path, builder.ToString(), new UTF8Encoding(false));
         return true;
+    }
+
+    private static void AppendTextPart(
+        StringBuilder builder,
+        string boundary,
+        string contentType,
+        string content)
+    {
+        builder.AppendLine($"--{boundary}");
+        builder.AppendLine($"Content-Type: {contentType}; charset=utf-8");
+        builder.AppendLine("Content-Transfer-Encoding: 8bit");
+        builder.AppendLine();
+        builder.AppendLine(content);
     }
 
     private static string ResolveArchivePath(string path, string archiveRoot)
