@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.9.2](https://github.com/bauer-group/IP-David2Exchange/compare/v0.9.1...v0.9.2) (2026-11-02)
+
+### 🐛 Bug Fixes
+
+* **fax:** use [FAX] as fallback subject ([9e765b1](https://github.com/bauer-group/IP-David2Exchange/commit/9e765b1ac8d8799064e135cf0b96b5fa9d7cb5c3))
+
 ## [0.9.1](https://github.com/bauer-group/IP-David2Exchange/compare/v0.9.0...v0.9.1) (2026-11-02)
 
 ### 🐛 Bug Fixes
