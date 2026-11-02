@@ -52,6 +52,7 @@ public sealed class EwsOutputTarget : IOutputTarget
     private readonly Dictionary<string, Folder> _folderCache =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<WellKnownFolderName, Folder> _wellKnownFolders = new();
+    private readonly SemaphoreSlim _folderLock = new(1, 1);
 
     private ExchangeService? _service;
     private IReadOnlyList<ExchangeService> _services = Array.Empty<ExchangeService>();
@@ -146,7 +147,7 @@ public sealed class EwsOutputTarget : IOutputTarget
 
         foreach (var item in items)
         {
-            if (item.Kind != "mail" || item.CheckExisting)
+            if (item.Kind != "mail")
             {
                 try
                 {
@@ -175,33 +176,16 @@ public sealed class EwsOutputTarget : IOutputTarget
 
         foreach (var group in mailGroups.Values)
         {
-            var chunks = group.Items.Chunk(BatchSize).ToList();
-            var batchResults = new ConcurrentBag<OutputResult>();
-
-            await Parallel.ForEachAsync(
-                chunks,
-                new ParallelOptions
-                {
-                    MaxDegreeOfParallelism = 8,
-                    CancellationToken = cancellationToken
-                },
-                async (chunk, token) =>
-                {
-                    var service = _services[
-                        (int)((uint)Interlocked.Increment(ref _serviceIndex) % _services.Count)];
-                    var chunkResults = await CreateMailBatchAsync(
-                        service,
-                        group.Folder,
-                        chunk,
-                        token);
-
-                    foreach (var result in chunkResults)
-                    {
-                        batchResults.Add(result);
-                    }
-                });
-
-            results.AddRange(batchResults);
+            foreach (var chunk in group.Items.Chunk(BatchSize))
+            {
+                var service = _services[
+                    (int)((uint)Interlocked.Increment(ref _serviceIndex) % _services.Count)];
+                results.AddRange(await CreateMailBatchAsync(
+                    service,
+                    group.Folder,
+                    chunk,
+                    cancellationToken));
+            }
         }
 
         return results;
@@ -271,6 +255,26 @@ public sealed class EwsOutputTarget : IOutputTarget
             var entry = pending[0];
             try
             {
+                if (entry.Item.CheckExisting)
+                {
+                    var exists = !string.IsNullOrWhiteSpace(entry.MessageId)
+                        ? await ExistsWithRetryAsync(
+                            entry.MessageId!,
+                            folder,
+                            cancellationToken)
+                        : await ExistsByItemKeyAsync(
+                            entry.Item,
+                            folder,
+                            cancellationToken);
+
+                    if (exists)
+                    {
+                        Interlocked.Increment(ref _alreadyPresent);
+                        results.Add(new OutputResult(entry.Item, true, null, true));
+                        return results;
+                    }
+                }
+
                 await SaveWithRetryAsync(
                     () => entry.Message.Save(folder.Id),
                     cancellationToken);
@@ -483,14 +487,14 @@ public sealed class EwsOutputTarget : IOutputTarget
             !string.IsNullOrWhiteSpace(messageId) &&
             await ExistsAsync(messageId, folder, cancellationToken))
         {
-            _alreadyPresent++;
+            Interlocked.Increment(ref _alreadyPresent);
             return;
         }
 
         if (item.CheckExisting &&
             await ExistsByItemKeyAsync(item, folder, cancellationToken))
         {
-            _alreadyPresent++;
+            Interlocked.Increment(ref _alreadyPresent);
             return;
         }
 
@@ -535,7 +539,7 @@ public sealed class EwsOutputTarget : IOutputTarget
         if (item.CheckExisting &&
             await ExistsByItemKeyAsync(item, folder, cancellationToken))
         {
-            _alreadyPresent++;
+            Interlocked.Increment(ref _alreadyPresent);
             return;
         }
 
@@ -593,7 +597,7 @@ public sealed class EwsOutputTarget : IOutputTarget
         if (item.CheckExisting &&
             await ExistsByItemKeyAsync(item, folder, cancellationToken))
         {
-            _alreadyPresent++;
+            Interlocked.Increment(ref _alreadyPresent);
             return;
         }
 
@@ -675,7 +679,7 @@ public sealed class EwsOutputTarget : IOutputTarget
         if (item.CheckExisting &&
             await ExistsByItemKeyAsync(item, folder, cancellationToken))
         {
-            _alreadyPresent++;
+            Interlocked.Increment(ref _alreadyPresent);
             return;
         }
 
@@ -759,6 +763,21 @@ public sealed class EwsOutputTarget : IOutputTarget
     }
 
     private async Task<Folder> GetTargetFolderAsync(
+        OutputItem item,
+        CancellationToken cancellationToken)
+    {
+        await _folderLock.WaitAsync(cancellationToken);
+        try
+        {
+            return await GetTargetFolderCoreAsync(item, cancellationToken);
+        }
+        finally
+        {
+            _folderLock.Release();
+        }
+    }
+
+    private async Task<Folder> GetTargetFolderCoreAsync(
         OutputItem item,
         CancellationToken cancellationToken)
     {
@@ -1220,6 +1239,7 @@ public sealed class EwsOutputTarget : IOutputTarget
         _wellKnownFolders.Clear();
         _services = Array.Empty<ExchangeService>();
         _service = null;
+        _folderLock.Dispose();
         return ValueTask.CompletedTask;
     }
 

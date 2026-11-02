@@ -16,6 +16,8 @@ public sealed class ItemDocument
     public string? Subject { get; set; }
     public string? MessageId { get; set; }
     public long? SizeBytes { get; set; }
+    public int? AttachmentCount { get; set; }
+    public Dictionary<string, string?> Properties { get; set; } = new();
     public DateTime? ReceivedLocal { get; set; }
     public DateTime? SentLocal { get; set; }
     public bool? IsRead { get; set; }

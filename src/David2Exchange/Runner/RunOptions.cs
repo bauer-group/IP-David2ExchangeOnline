@@ -21,4 +21,7 @@ public sealed class RunOptions
     public string? ReportPath { get; set; }
 
     public bool DiscoverOnly { get; set; }
+
+    /// <summary>Discover and export EMLs into staging/LiteDB, but do not import.</summary>
+    public bool Prepare { get; set; }
 }

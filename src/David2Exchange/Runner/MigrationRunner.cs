@@ -43,6 +43,10 @@ public sealed class MigrationRunner
                     "Für alle Items --all verwenden.");
             }
 
+            var stagingRoot = ConfigLoader.ResolvePath(config, config.Staging.Root);
+            var emlStageRoot = Path.Combine(stagingRoot, "eml-stage");
+            Directory.CreateDirectory(emlStageRoot);
+
             foreach (var mailbox in SelectMailboxes(config, options.MailboxId, options.Wave))
             {
                 var archive = session.OpenArchive(mailbox.Source.ArchivePath);
@@ -61,6 +65,19 @@ public sealed class MigrationRunner
                     {
                         var document = ToDocument(mailbox, item, archivePath, folderPath);
                         manifest.UpsertDiscovered(document);
+
+                        if (options.Prepare)
+                        {
+                            ExportItem(
+                                manifest,
+                                mailbox,
+                                config.David.ArchiveRoot,
+                                item,
+                                archivePath,
+                                folderPath,
+                                document.Key,
+                                Path.Combine(emlStageRoot, mailbox.Id));
+                        }
                     }
 
                     count++;
@@ -102,6 +119,7 @@ public sealed class MigrationRunner
             Wave = options.Wave,
             Limit = effectiveLimit,
             DiscoverOnly = true,
+            Prepare = true,
             DryRun = options.DryRun
         };
 
@@ -126,188 +144,21 @@ public sealed class MigrationRunner
 
         try
         {
-            var selectedIds = SelectMailboxes(config, options.MailboxId, options.Wave)
-                .Select(mailbox => mailbox.Id)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-            var pendingKeys = manifest
-                .GetPendingKeys(options.MailboxId, effectiveLimit, options.Newest)
-                .Where(key => selectedIds.Any(id =>
-                    key.StartsWith(id + "|", StringComparison.OrdinalIgnoreCase)))
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-            if (pendingKeys.Count == 0)
-            {
-                Console.WriteLine("Keine offenen Items.");
-                manifest.FinishRun(run);
-                PrintSummary(manifest.GetSummary(options.MailboxId), "run");
-                return 0;
-            }
-
-            var pendingCount = pendingKeys.Count;
-            Console.WriteLine($"Offene Items: {pendingCount} (Ausgabe: {outputKind})");
-
             var stagingRoot = ConfigLoader.ResolvePath(config, config.Staging.Root);
             var outputRoot = Path.Combine(stagingRoot, "output");
-            var emlStageRoot = Path.Combine(stagingRoot, "eml-stage");
-            Directory.CreateDirectory(emlStageRoot);
 
-            IOutputTarget? sharedLocalOutput = null;
-            if (outputKind.Equals("local", StringComparison.OrdinalIgnoreCase))
-            {
-                sharedLocalOutput = new LocalFileOutputTarget();
-                await sharedLocalOutput.OpenAsync(new OutputContext(outputRoot), cancellationToken);
-            }
-
-            try
-            {
-                foreach (var mailbox in SelectMailboxes(config, options.MailboxId, options.Wave))
-                {
-                    var mailboxPrefix = mailbox.Id + "|";
-                    var mailboxPendingCount = pendingKeys.Count(key =>
-                        key.StartsWith(mailboxPrefix, StringComparison.OrdinalIgnoreCase));
-                    if (mailboxPendingCount == 0)
-                    {
-                        continue;
-                    }
-
-                    IOutputTarget mailboxOutput = sharedLocalOutput ??
-                                                  OutputTargetFactory.Create(new OutputSettings(
-                                                      outputKind,
-                                                      mailbox.Target.Upn,
-                                                      config.M365.EwsUrl,
-                                                      config.M365.TenantId,
-                                                      config.M365.ClientId,
-                                                      config.M365.CertThumbprint,
-                                                      config.M365.EwsFolder));
-
-                    if (sharedLocalOutput is null)
-                    {
-                        await mailboxOutput.OpenAsync(new OutputContext(outputRoot), cancellationToken);
-                    }
-
-                    try
-                    {
-                        var exported = new List<OutputItem>();
-
-                        async Task FlushAsync()
-                        {
-                            if (exported.Count == 0)
-                            {
-                                return;
-                            }
-
-                            foreach (var batch in exported.Chunk(100))
-                            {
-                                var results = await mailboxOutput.WriteBatchAsync(
-                                    batch,
-                                    cancellationToken);
-
-                                foreach (var result in results)
-                                {
-                                    var key = BuildKey(
-                                        mailbox.Id,
-                                        result.Item.ArchivePath,
-                                        result.Item.Id);
-                                    var document = manifest.Get(key);
-                                    if (document is null)
-                                    {
-                                        continue;
-                                    }
-
-                                    if (result.Success)
-                                    {
-                                        document.State = ItemState.Imported;
-                                        document.ImportedUtc = DateTime.UtcNow;
-                                        document.LastError = null;
-                                        manifest.Save(document);
-                                        CleanupStagedItem(result.Item);
-                                        Console.WriteLine(
-                                            $"  OK {result.Item.Id} · {result.Item.Subject}");
-                                    }
-                                    else
-                                    {
-                                        document.State = ItemState.Failed;
-                                        document.Attempts++;
-                                        document.LastError = result.Error;
-                                        manifest.Save(document);
-                                        Console.Error.WriteLine(
-                                            $"  FEHLER {result.Item.Id}: {result.Error}");
-                                    }
-                                }
-                            }
-
-                            exported.Clear();
-                        }
-
-                        var archive = session.OpenArchive(mailbox.Source.ArchivePath);
-                        foreach (var (item, archivePath, folderPath) in Walk(
-                                     archive,
-                                     mailbox.ExcludeArchives,
-                                     archive.FolderKind))
-                        {
-                            var key = BuildKey(mailbox.Id, archivePath, item.Id);
-                            if (!pendingKeys.Contains(key))
-                            {
-                                continue;
-                            }
-
-                            var outputItem = ExportItem(
-                                manifest,
-                                mailbox,
-                                config.David.ArchiveRoot,
-                                item,
-                                archivePath,
-                                folderPath,
-                                key,
-                                Path.Combine(emlStageRoot, mailbox.Id));
-
-                            if (outputItem is not null)
-                            {
-                                exported.Add(outputItem);
-                            }
-
-                            pendingKeys.Remove(key);
-
-                            // Maximal 80 Items im Speicher halten; 8 Worker × 10er-Batches.
-                            if (exported.Count >= 80)
-                            {
-                                await FlushAsync();
-                            }
-
-                            if (pendingKeys.Count == 0)
-                            {
-                                break;
-                            }
-                        }
-
-                        await FlushAsync();
-                    }
-                    finally
-                    {
-                        if (sharedLocalOutput is null)
-                        {
-                            await mailboxOutput.CompleteAsync(
-                                new OutputSummary(mailboxPendingCount, 0, run.StartedUtc, DateTime.UtcNow),
-                                cancellationToken);
-                            await mailboxOutput.DisposeAsync();
-                        }
-                    }
-                }
-            }
-            finally
-            {
-                if (sharedLocalOutput is not null)
-                {
-                    await sharedLocalOutput.CompleteAsync(
-                        new OutputSummary(pendingCount, 0, run.StartedUtc, DateTime.UtcNow),
-                        cancellationToken);
-                    await sharedLocalOutput.DisposeAsync();
-                }
-            }
+            await ImportQueueAsync(
+                config,
+                manifest,
+                options,
+                outputKind,
+                outputRoot,
+                run.StartedUtc,
+                cancellationToken);
 
             manifest.FinishRun(run);
             PrintSummary(manifest.GetSummary(options.MailboxId), "run");
+            PrintSkippedReasons(manifest, options.MailboxId);
             return 0;
         }
         catch (Exception ex)
@@ -365,6 +216,7 @@ public sealed class MigrationRunner
             return 1;
         }
 
+        PrintSkippedReasons(manifest, options.MailboxId);
         Console.WriteLine("VERIFY OK: Alle Manifest-Items der Auswahl sind importiert oder bewusst skipped.");
         return 0;
     }
@@ -429,6 +281,159 @@ public sealed class MigrationRunner
         Console.WriteLine($"Report: {outputPath}");
         Console.WriteLine($"JSON:   {jsonPath}");
         return 0;
+    }
+
+    private static async Task ImportQueueAsync(
+        MigrationConfig config,
+        LiteDbManifest manifest,
+        RunOptions options,
+        string outputKind,
+        string outputRoot,
+        DateTime startedUtc,
+        CancellationToken cancellationToken)
+    {
+        IOutputTarget? sharedLocalOutput = null;
+        if (outputKind.Equals("local", StringComparison.OrdinalIgnoreCase))
+        {
+            sharedLocalOutput = new LocalFileOutputTarget();
+            await sharedLocalOutput.OpenAsync(new OutputContext(outputRoot), cancellationToken);
+        }
+
+        try
+        {
+            foreach (var mailbox in SelectMailboxes(config, options.MailboxId, options.Wave))
+            {
+                IOutputTarget mailboxOutput = sharedLocalOutput ??
+                                              OutputTargetFactory.Create(new OutputSettings(
+                                                  outputKind,
+                                                  mailbox.Target.Upn,
+                                                  config.M365.EwsUrl,
+                                                  config.M365.TenantId,
+                                                  config.M365.ClientId,
+                                                  config.M365.CertThumbprint,
+                                                  config.M365.EwsFolder));
+
+                if (sharedLocalOutput is null)
+                {
+                    await mailboxOutput.OpenAsync(new OutputContext(outputRoot), cancellationToken);
+                }
+
+                var processed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                try
+                {
+                    while (true)
+                    {
+                        var pending = manifest
+                            .GetPending(mailbox.Id, 80, options.Newest)
+                            .Where(item => !processed.Contains(item.Key))
+                            .ToList();
+
+                        if (pending.Count == 0)
+                        {
+                            break;
+                        }
+
+                        var batches = pending
+                            .Chunk(10)
+                            .Select(batch => batch.Select(ToOutputItem).ToList())
+                            .ToList();
+
+                        await Parallel.ForEachAsync(
+                            batches,
+                            new ParallelOptions
+                            {
+                                MaxDegreeOfParallelism = 8,
+                                CancellationToken = cancellationToken
+                            },
+                            async (batch, token) =>
+                            {
+                                var results = await mailboxOutput.WriteBatchAsync(batch, token);
+                                foreach (var result in results)
+                                {
+                                    var key = BuildKey(
+                                        mailbox.Id,
+                                        result.Item.ArchivePath,
+                                        result.Item.Id);
+                                    var document = manifest.Get(key);
+                                    if (document is null)
+                                    {
+                                        continue;
+                                    }
+
+                                    if (result.Success)
+                                    {
+                                        document.State = ItemState.Imported;
+                                        document.ImportedUtc = DateTime.UtcNow;
+                                        document.LastError = null;
+                                        manifest.Save(document);
+                                        CleanupStagedItem(result.Item);
+                                        Console.WriteLine(
+                                            $"  OK {result.Item.Id} · {result.Item.Subject}");
+                                    }
+                                    else
+                                    {
+                                        document.State = ItemState.Failed;
+                                        document.Attempts++;
+                                        document.LastError = result.Error;
+                                        manifest.Save(document);
+                                        Console.Error.WriteLine(
+                                            $"  FEHLER {result.Item.Id}: {result.Error}");
+                                    }
+                                }
+                            });
+
+                        foreach (var document in pending)
+                        {
+                            processed.Add(document.Key);
+                        }
+                    }
+                }
+                finally
+                {
+                    if (sharedLocalOutput is null)
+                    {
+                        await mailboxOutput.CompleteAsync(
+                            new OutputSummary(processed.Count, 0, startedUtc, DateTime.UtcNow),
+                            cancellationToken);
+                        await mailboxOutput.DisposeAsync();
+                    }
+                }
+            }
+        }
+        finally
+        {
+            if (sharedLocalOutput is not null)
+            {
+                await sharedLocalOutput.CompleteAsync(
+                    new OutputSummary(0, 0, startedUtc, DateTime.UtcNow),
+                    cancellationToken);
+                await sharedLocalOutput.DisposeAsync();
+            }
+        }
+    }
+
+    private static OutputItem ToOutputItem(ItemDocument document)
+    {
+        var kind = DavidItemTypes.Kind(document.ItemType);
+        return new OutputItem(
+            document.ArchivePath,
+            document.DavidId,
+            document.ItemType,
+            kind,
+            document.Subject,
+            document.SizeBytes,
+            document.AttachmentCount,
+            document.ReceivedLocal,
+            document.SentLocal,
+            document.IsRead,
+            document.StagingPath is null
+                ? null
+                : Path.Combine("eml", Path.GetFileName(document.StagingPath)),
+            document.StagingPath,
+            document.Properties,
+            kind,
+            document.FolderPath,
+            document.State is ItemState.Exported or ItemState.Importing);
     }
 
     private static OutputItem? ExportItem(
@@ -545,6 +550,16 @@ public sealed class MigrationRunner
             manifest.Save(document);
         }
 
+        if (!DavidItemTypes.IsMailLike(document.ItemType))
+        {
+            document.Properties = new Dictionary<string, string?>(item.Properties);
+            document.AttachmentCount = item.Properties.TryGetValue("AttachmentCount", out var attachmentCount) &&
+                                       int.TryParse(attachmentCount, out var parsedAttachmentCount)
+                ? parsedAttachmentCount
+                : null;
+            manifest.Save(document);
+        }
+
         return new OutputItem(
             archivePath,
             item.Id,
@@ -628,6 +643,13 @@ public sealed class MigrationRunner
             ItemType = type,
             Subject = item.Subject,
             SizeBytes = item.SizeBytes,
+            AttachmentCount = item.Properties.TryGetValue("AttachmentCount", out var count) &&
+                              int.TryParse(count, out var parsed)
+                ? parsed
+                : null,
+            Properties = DavidItemTypes.IsMailLike(type)
+                ? new Dictionary<string, string?>()
+                : new Dictionary<string, string?>(item.Properties),
             ReceivedLocal = item.ReceivedLocal,
             SentLocal = item.SentLocal,
             IsRead = item.IsRead,
@@ -1038,6 +1060,28 @@ public sealed class MigrationRunner
                 x.Id.Equals(mailboxId, StringComparison.OrdinalIgnoreCase));
     }
 
+    private static void PrintSkippedReasons(LiteDbManifest manifest, string? mailboxId)
+    {
+        var groups = manifest.GetAll(mailboxId)
+            .Where(item => item.State == ItemState.Skipped)
+            .GroupBy(item => string.IsNullOrWhiteSpace(item.LastError)
+                ? "ohne Grund"
+                : item.LastError)
+            .OrderByDescending(group => group.Count())
+            .ToList();
+
+        if (groups.Count == 0)
+        {
+            return;
+        }
+
+        Console.WriteLine("Skipped-Gründe:");
+        foreach (var group in groups)
+        {
+            Console.WriteLine($"  {group.Count(),5} · {group.Key}");
+        }
+    }
+
     private static void PrintSummary(ManifestSummary summary, string phase)
     {
         Console.WriteLine();
@@ -1048,3 +1092,4 @@ public sealed class MigrationRunner
             $"total={summary.Total}");
     }
 }
+
