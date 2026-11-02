@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.9.13](https://github.com/bauer-group/IP-David2Exchange/compare/v0.9.12...v0.9.13) (2026-11-02)
+
+### 🐛 Bug Fixes
+
+* **manifest:** avoid read-then-write during export and queue ([6f700b2](https://github.com/bauer-group/IP-David2Exchange/commit/6f700b23404433538834149ef3eb76d78a2cfc63))
+
 ## [0.9.12](https://github.com/bauer-group/IP-David2Exchange/compare/v0.9.11...v0.9.12) (2026-11-02)
 
 ### 🐛 Bug Fixes
