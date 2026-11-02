@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.9.9](https://github.com/bauer-group/IP-David2Exchange/compare/v0.9.8...v0.9.9) (2026-11-02)
+
+### 🐛 Bug Fixes
+
+* **ews:** save each mail directly into explicit folder ([a0372af](https://github.com/bauer-group/IP-David2Exchange/commit/a0372af37bdcf8101d7acb16a4cb90e4a4c0b62b))
+
 ## [0.9.8](https://github.com/bauer-group/IP-David2Exchange/compare/v0.9.7...v0.9.8) (2026-11-02)
 
 ### 🐛 Bug Fixes
