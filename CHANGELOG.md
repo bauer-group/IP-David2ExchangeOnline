@@ -3,6 +3,16 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.8.0](https://github.com/bauer-group/IP-David2Exchange/compare/v0.7.0...v0.8.0) (2026-11-02)
+
+### 🚀 Features
+
+* **fax:** convert TIFF to named multi-page PDF ([20bb9fb](https://github.com/bauer-group/IP-David2Exchange/commit/20bb9fbe5bcecd736a7ace14ac028ddd90e4e651))
+
+### 🐛 Bug Fixes
+
+* **ews:** keep Inbox and Sent Items in separate batch groups ([ff8e260](https://github.com/bauer-group/IP-David2Exchange/commit/ff8e260515b6ae71cdb9a363eb422648f58662ff))
+
 ## [0.7.0](https://github.com/bauer-group/IP-David2Exchange/compare/v0.6.3...v0.7.0) (2026-11-02)
 
 ### 🚀 Features
