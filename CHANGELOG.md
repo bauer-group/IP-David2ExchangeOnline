@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.5.0](https://github.com/bauer-group/IP-David2Exchange/compare/v0.4.6...v0.5.0) (2026-11-02)
+
+### 🚀 Features
+
+* **unpack:** mark all COMMON and USER archives as unpacked ([4961628](https://github.com/bauer-group/IP-David2Exchange/commit/4961628db40d8436c52a7114fda52c09f6fce8c4))
+
 ## [0.4.6](https://github.com/bauer-group/IP-David2Exchange/compare/v0.4.5...v0.4.6) (2026-11-02)
 
 ### 🐛 Bug Fixes
