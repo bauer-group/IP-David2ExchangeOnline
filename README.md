@@ -215,6 +215,9 @@ Schedule via Task Scheduler under the David run user. Always run `setup --check`
 - Up to **8 EWS workers** import batches in parallel, each with its own `ExchangeService`.
 - Dedupe lookup is skipped for newly discovered items; it is only used for resume (`Exported`/`Importing`).
 - LiteDB state is written after each completed EWS batch, not per item.
+- Staged EMLs and attachment folders are deleted immediately after a successful batch/item import.
+- On startup, staging files of already `imported` manifest items are cleaned up as well.
+- Failed items keep their staging files for retry.
 - `limits.limit` still caps the run; use `--all` for a full/delta run.
 
 ## 6. Abort and resume
