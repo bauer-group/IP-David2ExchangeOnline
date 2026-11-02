@@ -56,6 +56,16 @@ logs\david2exchange-YYYYMMDD.log
 
 Relative paths in `migration.yaml` resolve from the config folder. The default config is `migration.yaml` next to the EXE. Console output is mirrored to the daily log file.
 
+`david.server` may be a hostname or an IP address; it is used for display/reporting. `david.archiveRoot` may also use an IP-based UNC path, for example:
+
+```yaml
+david:
+  server: 192.168.0.10
+  archiveRoot: \\192.168.0.10\David\Archive
+```
+
+Fax image paths returned by David are rewritten from their `...\archive\...` suffix to this configured `archiveRoot` before reading. If the rewritten file still does not exist, the fax item is marked `failed` with the exact Image path instead of creating a text-only EML. In that case the `Image` value is a David-internal/container path, not a readable normal file; the migration account needs access to the archive share or the export must run on the David server.
+
 ## 3. Quick start (EXE)
 
 ```powershell
