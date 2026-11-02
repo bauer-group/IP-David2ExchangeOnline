@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.6.3](https://github.com/bauer-group/IP-David2Exchange/compare/v0.6.2...v0.6.3) (2026-11-02)
+
+### 🐛 Bug Fixes
+
+* **fax:** support archiveRoot with or without archive segment ([b6c4209](https://github.com/bauer-group/IP-David2Exchange/commit/b6c42096bda39e7aef7fe691b76db644b56517bf))
+
 ## [0.6.2](https://github.com/bauer-group/IP-David2Exchange/compare/v0.6.1...v0.6.2) (2026-11-02)
 
 ### 🐛 Bug Fixes
