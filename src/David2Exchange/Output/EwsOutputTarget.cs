@@ -263,6 +263,28 @@ public sealed class EwsOutputTarget : IOutputTarget
             return results;
         }
 
+        // Sicherheitsmodus: ein Item wird direkt in den expliziten Ordner
+        // gespeichert. CreateItems mit MimeContent hat sich für die
+        // Ordnerzuordnung nicht als zuverlässig erwiesen.
+        if (pending.Count == 1)
+        {
+            var entry = pending[0];
+            try
+            {
+                await SaveWithRetryAsync(
+                    () => entry.Message.Save(folder.Id),
+                    cancellationToken);
+                Interlocked.Increment(ref _written);
+                results.Add(new OutputResult(entry.Item, true, null));
+            }
+            catch (Exception ex)
+            {
+                results.Add(new OutputResult(entry.Item, false, ex.Message));
+            }
+
+            return results;
+        }
+
         try
         {
             var responses = await CreateItemsWithRetryAsync(
@@ -498,19 +520,9 @@ public sealed class EwsOutputTarget : IOutputTarget
         message.SetExtendedProperty(PidTagReadReceiptRequested, false);
         message.SetExtendedProperty(PidTagDeliveryReportRequested, false);
 
-        var responses = await CreateItemsWithRetryAsync(
-            _service!,
-            new[] { message },
-            folder.Id,
+        await SaveWithRetryAsync(
+            () => message.Save(folder.Id),
             cancellationToken);
-
-        if (responses.Count == 0 || responses[0].Result != ServiceResult.Success)
-        {
-            var error = responses.Count > 0
-                ? $"{responses[0].Result}: {responses[0].ErrorMessage}"
-                : "Keine ServiceResponse";
-            throw new InvalidOperationException($"EWS-Import fehlgeschlagen für {item.Id}: {error}");
-        }
 
         _written++;
     }
