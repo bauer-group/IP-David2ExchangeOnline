@@ -197,6 +197,8 @@ public sealed class MockDavidSession : IDavidSession
 
         public byte[]? FaxImage => null;
 
+        public string? FaxImagePath => null;
+
         public bool TryCopyAttachment(
             DavidAttachmentInfo attachment,
             string directory,

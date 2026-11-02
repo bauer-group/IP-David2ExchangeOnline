@@ -55,6 +55,9 @@ internal sealed class DavidComItem : IDavidItem
 
     public IReadOnlyDictionary<string, string?> Properties { get; }
 
+    public string? FaxImagePath =>
+        ComHelpers.GetFirstString(_item, "Image");
+
     public byte[]? FaxImage
     {
         get

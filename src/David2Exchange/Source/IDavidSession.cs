@@ -71,6 +71,8 @@ public interface IDavidItem
 
     byte[]? FaxImage { get; }
 
+    string? FaxImagePath { get; }
+
     bool TryExportEml(string path, out string? error);
 
     bool TryCopyAttachment(
