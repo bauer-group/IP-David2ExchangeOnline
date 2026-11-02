@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 using System.Collections.Concurrent;
 using System.Globalization;
+using System.Net.Http;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -39,6 +40,11 @@ public sealed class EwsOutputTarget : IOutputTarget
         new Guid("7f9c1a52-3b6e-4f0a-9d2c-5e8b1a4c7d90"),
         "david2exchange.ItemKey",
         MapiPropertyType.String);
+
+    private const int BatchSize = 10;
+    private const int MaxRetries = 5;
+    private const int BaseRetryDelayMs = 1_000;
+    private const int MaxRetryDelayMs = 30_000;
 
     private readonly EwsOutputOptions _options;
     private readonly Dictionary<string, Folder> _folderCache =
@@ -82,7 +88,7 @@ public sealed class EwsOutputTarget : IOutputTarget
                 ImpersonatedUserId = new ImpersonatedUserId(
                     ConnectingIdType.SmtpAddress,
                     _options.TargetUpn),
-                Timeout = 300_000
+                Timeout = 60_000
             };
 
             service.HttpHeaders["X-AnchorMailbox"] = _options.TargetUpn;
@@ -167,7 +173,7 @@ public sealed class EwsOutputTarget : IOutputTarget
 
         foreach (var group in mailGroups.Values)
         {
-            var chunks = group.Items.Chunk(100).ToList();
+            var chunks = group.Items.Chunk(BatchSize).ToList();
             var batchResults = new ConcurrentBag<OutputResult>();
 
             await Parallel.ForEachAsync(
@@ -256,11 +262,11 @@ public sealed class EwsOutputTarget : IOutputTarget
 
         try
         {
-            var responses = await service.CreateItems(
-                pending.Select(entry => entry.Message),
+            var responses = await CreateItemsWithRetryAsync(
+                service,
+                pending.Select(entry => entry.Message).ToList(),
                 folder.Id,
-                MessageDisposition.SaveOnly,
-                null);
+                cancellationToken);
 
             for (var i = 0; i < pending.Count; i++)
             {
@@ -312,6 +318,91 @@ public sealed class EwsOutputTarget : IOutputTarget
         }
 
         return results;
+    }
+
+    private async Task SaveWithRetryAsync(
+        Func<Task> save,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                await save();
+                return;
+            }
+            catch (Exception ex) when (
+                attempt < MaxRetries &&
+                IsTransientEwsError(ex) &&
+                !cancellationToken.IsCancellationRequested)
+            {
+                var delay = GetRetryDelay(ex, attempt);
+                Console.Error.WriteLine(
+                    $"  EWS-Throttling: {ex.Message} · Retry {attempt + 1}/{MaxRetries} in {delay} ms");
+                await Task.Delay(delay, cancellationToken);
+            }
+        }
+    }
+
+    private async Task<ServiceResponseCollection<ServiceResponse>> CreateItemsWithRetryAsync(
+        ExchangeService service,
+        IReadOnlyList<EmailMessage> messages,
+        FolderId folderId,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                return await service.CreateItems(
+                    messages,
+                    folderId,
+                    MessageDisposition.SaveOnly,
+                    null);
+            }
+            catch (Exception ex) when (
+                attempt < MaxRetries &&
+                IsTransientEwsError(ex) &&
+                !cancellationToken.IsCancellationRequested)
+            {
+                var delay = GetRetryDelay(ex, attempt);
+                Console.Error.WriteLine(
+                    $"  EWS-Throttling: {ex.Message} · Retry {attempt + 1}/{MaxRetries} in {delay} ms");
+                await Task.Delay(delay, cancellationToken);
+            }
+        }
+    }
+
+    private static bool IsTransientEwsError(Exception exception)
+    {
+        if (exception is ServiceResponseException responseException)
+        {
+            return responseException.ErrorCode is
+                ServiceError.ErrorServerBusy or
+                ServiceError.ErrorTimeoutExpired or
+                ServiceError.ErrorBatchProcessingStopped or
+                ServiceError.ErrorInternalServerTransientError or
+                ServiceError.ErrorInternalServerError;
+        }
+
+        return exception is ServiceRequestException or
+            HttpRequestException or
+            TimeoutException;
+    }
+
+    private static int GetRetryDelay(Exception exception, int attempt)
+    {
+        if (exception is ServiceResponseException responseException &&
+            responseException.Response?.ErrorDetails is { } details &&
+            details.TryGetValue("BackOffMilliseconds", out var backOffText) &&
+            int.TryParse(backOffText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var backOff))
+        {
+            return Math.Clamp(backOff, BaseRetryDelayMs, MaxRetryDelayMs);
+        }
+
+        var exponential = BaseRetryDelayMs * (1 << Math.Min(attempt, 5));
+        var jitter = Random.Shared.Next(0, 500);
+        return Math.Min(MaxRetryDelayMs, exponential + jitter);
     }
 
     private async Task ImportMailAsync(
@@ -369,11 +460,11 @@ public sealed class EwsOutputTarget : IOutputTarget
         message.SetExtendedProperty(PidTagReadReceiptRequested, false);
         message.SetExtendedProperty(PidTagDeliveryReportRequested, false);
 
-        var responses = await _service!.CreateItems(
+        var responses = await CreateItemsWithRetryAsync(
+            _service!,
             new[] { message },
             folder.Id,
-            MessageDisposition.SaveOnly,
-            null);
+            cancellationToken);
 
         if (responses.Count == 0 || responses[0].Result != ServiceResult.Success)
         {
@@ -422,7 +513,9 @@ public sealed class EwsOutputTarget : IOutputTarget
         appointment.SetExtendedProperty(ItemKeyProperty, BuildItemKey(item));
         try
         {
-            await appointment.Save(folder.Id);
+            await SaveWithRetryAsync(
+                () => appointment.Save(folder.Id),
+                cancellationToken);
         }
         catch (ServiceResponseException)
         {
@@ -434,7 +527,9 @@ public sealed class EwsOutputTarget : IOutputTarget
                 throw;
             }
 
-            await appointment.Save(calendarRoot.Id);
+            await SaveWithRetryAsync(
+                () => appointment.Save(calendarRoot.Id),
+                cancellationToken);
         }
 
         _written++;
@@ -500,7 +595,9 @@ public sealed class EwsOutputTarget : IOutputTarget
         contact.SetExtendedProperty(ItemKeyProperty, BuildItemKey(item));
         try
         {
-            await contact.Save(folder.Id);
+            await SaveWithRetryAsync(
+                () => contact.Save(folder.Id),
+                cancellationToken);
         }
         catch (ServiceResponseException)
         {
@@ -512,7 +609,9 @@ public sealed class EwsOutputTarget : IOutputTarget
                 throw;
             }
 
-            await contact.Save(contactsRoot.Id);
+            await SaveWithRetryAsync(
+                () => contact.Save(contactsRoot.Id),
+                cancellationToken);
         }
 
         _written++;
@@ -557,7 +656,9 @@ public sealed class EwsOutputTarget : IOutputTarget
         task.SetExtendedProperty(ItemKeyProperty, BuildItemKey(item));
         try
         {
-            await task.Save(folder.Id);
+            await SaveWithRetryAsync(
+                () => task.Save(folder.Id),
+                cancellationToken);
         }
         catch (ServiceResponseException)
         {
@@ -569,7 +670,9 @@ public sealed class EwsOutputTarget : IOutputTarget
                 throw;
             }
 
-            await task.Save(tasksRoot.Id);
+            await SaveWithRetryAsync(
+                () => task.Save(tasksRoot.Id),
+                cancellationToken);
         }
 
         _written++;
