@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.9.12](https://github.com/bauer-group/IP-David2Exchange/compare/v0.9.11...v0.9.12) (2026-11-02)
+
+### 🐛 Bug Fixes
+
+* **manifest:** serialize LiteDB reads and writes ([366f7f7](https://github.com/bauer-group/IP-David2Exchange/commit/366f7f77fc5a64059ea7b915cfa91a9586220250))
+
 ## [0.9.11](https://github.com/bauer-group/IP-David2Exchange/compare/v0.9.10...v0.9.11) (2026-11-02)
 
 ### 🐛 Bug Fixes
