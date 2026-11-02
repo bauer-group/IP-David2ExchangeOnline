@@ -11,7 +11,10 @@ namespace David2Exchange.Runner;
 
 public sealed class MigrationRunner
 {
-    public async Task<int> DiscoverAsync(RunOptions options, CancellationToken cancellationToken = default)
+    public async Task<int> DiscoverAsync(
+        RunOptions options,
+        IDavidSession? existingSession = null,
+        CancellationToken cancellationToken = default)
     {
         var config = ConfigLoader.Load(options.ConfigPath);
         config.Validate(requireM365: false);
@@ -20,11 +23,17 @@ public sealed class MigrationRunner
         using var manifest = CreateManifest(config);
         var run = manifest.BeginRun("discover", ToolInfo.Version);
         var summary = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        IDavidSession? ownedSession = null;
 
         try
         {
-            using IDavidSession session = new DavidComSession(config.David.ProgId);
-            session.Logon(config.David.Logon);
+            var session = existingSession;
+            if (session is null)
+            {
+                ownedSession = new DavidComSession(config.David.ProgId);
+                session = ownedSession;
+                session.Logon(config.David.Logon);
+            }
 
             var limit = options.Limit >= 0 ? options.Limit : config.Limits.Limit;
             if (limit > 0)
@@ -71,6 +80,10 @@ public sealed class MigrationRunner
             Console.Error.WriteLine($"DISCOVER FEHLER: {ex.Message}");
             return 2;
         }
+        finally
+        {
+            ownedSession?.Dispose();
+        }
     }
 
     public async Task<int> RunAsync(RunOptions options, CancellationToken cancellationToken = default)
@@ -92,7 +105,10 @@ public sealed class MigrationRunner
             DryRun = options.DryRun
         };
 
-        var discoverExit = await DiscoverAsync(discover, cancellationToken);
+        using IDavidSession session = new DavidComSession(config.David.ProgId);
+        session.Logon(config.David.Logon);
+
+        var discoverExit = await DiscoverAsync(discover, session, cancellationToken);
         if (discoverExit != 0)
         {
             return discoverExit;
@@ -135,9 +151,6 @@ public sealed class MigrationRunner
             var outputRoot = Path.Combine(stagingRoot, "output");
             var emlStageRoot = Path.Combine(stagingRoot, "eml-stage");
             Directory.CreateDirectory(emlStageRoot);
-
-            using IDavidSession session = new DavidComSession(config.David.ProgId);
-            session.Logon(config.David.Logon);
 
             IOutputTarget? sharedLocalOutput = null;
             if (outputKind.Equals("local", StringComparison.OrdinalIgnoreCase))
