@@ -34,13 +34,17 @@ public static class ConfigCreateRunner
                 "und mit --targets-file übergeben.");
         }
 
-        var sources = (await LoadSourcesAsync(options, cancellationToken))
+        var allSources = (await LoadSourcesAsync(options, cancellationToken)).ToList();
+        var sources = allSources
+            .Where(source => source.Depth == 1 && source.Kind == "USER")
+            .ToList();
+        var commonSources = allSources
             .Where(source =>
-                (source.Depth == 1 && source.Kind is "USER" or "COMMON") ||
-                (source.Depth == 0 && source.Kind == "COMMON"))
+                source.Kind == "COMMON" &&
+                (source.Depth == 0 || source.Depth == 1))
             .ToList();
 
-        if (sources.Count == 0)
+        if (sources.Count == 0 && commonSources.Count == 0)
         {
             throw new CliException("Keine Quellarchive gefunden.");
         }
@@ -62,62 +66,97 @@ public static class ConfigCreateRunner
             },
             M365 = new M365Config
             {
-                MigrationAdminUpn = options.AdminUpn
+                MigrationAdminUpn = options.AdminUpn,
+                ProvenanceDomain = domain
             },
             Limits = new LimitsConfig { Limit = 10 },
             Staging = new StagingConfig
             {
-                Root = @".\staging",
-                Manifest = @".\staging\manifest.db",
-                Logs = @".\staging\logs"
+                Root = @".\data",
+                Manifest = @".\data\manifest.db",
+                Logs = @".\logs"
             }
         };
 
         foreach (var source in sources.OrderBy(source => source.Kind)
                      .ThenBy(source => source.DisplayName))
         {
-            var isCommon = source.Kind.Equals("COMMON", StringComparison.OrdinalIgnoreCase);
             var displayName = string.IsNullOrWhiteSpace(source.DisplayName)
                 ? source.Path
                 : source.DisplayName;
+            var isSystem = IsSystemUser(source.Path);
 
             var sourceEmail = MailboxMatcher.NormalizeEmail(source.Email ?? "");
-            var match = MailboxMatcher.MatchByEmail(sourceEmail, targets, usedUpns);
-            var targetUpn = match.Target?.PrimarySmtpAddress ?? "";
-            var method = match.Method;
+            var targetUpn = "";
+            var method = "";
+            var enabled = false;
+            var createIfMissing = options.CreateIfMissing;
+            var targetType = "user";
+            MailboxTarget? targetInfo = null;
 
-            if (isCommon &&
-                (source.Path.Contains("unverteilt", StringComparison.OrdinalIgnoreCase) ||
-                 source.DisplayName.Contains("unverteilt", StringComparison.OrdinalIgnoreCase)))
+            if (isSystem)
             {
-                var unverteiltTarget = ResolveUnverteiltTarget(options, targets, usedUpns);
-                if (!string.IsNullOrWhiteSpace(unverteiltTarget))
+                method = "system-user-disabled";
+            }
+            else
+            {
+                var match = MailboxMatcher.MatchByEmail(sourceEmail, targets, usedUpns);
+                if (match.Target is not null)
                 {
-                    targetUpn = unverteiltTarget;
-                    method = options.UnverteiltUpn is not null
-                        ? "option-unverteilt"
-                        : "unverteilt-target";
+                    targetUpn = match.Target.PrimarySmtpAddress;
+                    method = match.Method;
+                    enabled = true;
+                    targetInfo = match.Target;
+                }
+                else
+                {
+                    var archiveId = LastPathSegment(source.Path);
+                    var fallbackEmail = BuildFallbackEmail(sourceEmail, archiveId, domain);
+                    var fallbackMatch = MailboxMatcher.MatchByEmail(
+                        fallbackEmail,
+                        targets,
+                        usedUpns);
+
+                    if (fallbackMatch.Target is not null)
+                    {
+                        targetUpn = fallbackMatch.Target.PrimarySmtpAddress;
+                        targetInfo = fallbackMatch.Target;
+                        method = $"fallback-{fallbackMatch.Method}";
+                    }
+                    else
+                    {
+                        targetUpn = fallbackEmail;
+                        targetType = "shared";
+                        createIfMissing = true;
+                        method = string.IsNullOrWhiteSpace(sourceEmail)
+                            ? "user-id-domain"
+                            : "unmatched-created-shared";
+                    }
+
+                    sourceEmail = fallbackEmail;
+                    enabled = true;
                 }
             }
 
             if (!string.IsNullOrWhiteSpace(targetUpn))
             {
                 usedUpns.Add(targetUpn);
+                targetInfo ??= targets.FirstOrDefault(candidate =>
+                    candidate.PrimarySmtpAddress.Equals(
+                        targetUpn,
+                        StringComparison.OrdinalIgnoreCase));
             }
-
-            var targetInfo = targets.FirstOrDefault(candidate =>
-                candidate.PrimarySmtpAddress.Equals(targetUpn, StringComparison.OrdinalIgnoreCase));
 
             var primaryAddress = targetInfo?.PrimarySmtpAddress ?? targetUpn;
             var id = UniqueId(displayName, source.Path, usedIds);
             config.Mailboxes.Add(new MailboxMapping
             {
                 Id = id,
-                Enabled = !string.IsNullOrWhiteSpace(targetUpn),
+                Enabled = enabled,
                 Wave = string.IsNullOrWhiteSpace(options.Wave) ? "default" : options.Wave,
                 Source = new SourceConfig
                 {
-                    Kind = isCommon ? "common" : "user",
+                    Kind = "user",
                     ArchivePath = source.Path,
                     Email = sourceEmail
                 },
@@ -127,7 +166,7 @@ public static class ConfigCreateRunner
                     Type = targetInfo?.RecipientTypeDetails
                         .Equals("SharedMailbox", StringComparison.OrdinalIgnoreCase) == true
                         ? "shared"
-                        : "user",
+                        : targetType,
                     DisplayName = string.IsNullOrWhiteSpace(targetInfo?.DisplayName)
                         ? displayName
                         : targetInfo!.DisplayName,
@@ -139,30 +178,88 @@ public static class ConfigCreateRunner
                             MailboxMatcher.NormalizeEmail(primaryAddress),
                             StringComparison.OrdinalIgnoreCase))
                         .Distinct(StringComparer.OrdinalIgnoreCase)
-                        .ToList() ?? new List<string>(),
-                    CreateIfMissing = options.CreateIfMissing
+                        .ToList(),
+                    CreateIfMissing = createIfMissing
                 },
                 Include = new List<string>
                 {
                     "mail", "fax", "sms", "voice", "chat", "calendar", "contacts"
                 },
-                ExcludeArchives = isCommon
-                    ? new List<string> { "ADDRESS", "#001#Adressen" }
-                    : new List<string>()
+                ExcludeArchives = new List<string>()
             });
 
             rows.Add(new MappingRow(
                 source.Path,
                 displayName,
                 sourceEmail,
-                source.Kind,
+                "USER",
                 targetUpn,
                 method));
         }
 
+        if (commonSources.Count > 0)
+        {
+            var commonTarget = string.IsNullOrWhiteSpace(options.UnverteiltUpn)
+                ? $"info@{domain}"
+                : options.UnverteiltUpn;
+            var commonMatch = MailboxMatcher.MatchByEmail(commonTarget, targets, usedUpns);
+            var commonTargetInfo = commonMatch.Target;
+            var commonUpn = commonTargetInfo?.PrimarySmtpAddress ?? commonTarget;
+            usedUpns.Add(commonUpn);
+
+            config.Mailboxes.Add(new MailboxMapping
+            {
+                Id = UniqueId("unverteilt", "COMMON", usedIds),
+                Enabled = true,
+                Wave = string.IsNullOrWhiteSpace(options.Wave) ? "default" : options.Wave,
+                Source = new SourceConfig
+                {
+                    Kind = "common",
+                    ArchivePath = "COMMON",
+                    Email = ""
+                },
+                Target = new TargetConfig
+                {
+                    Upn = commonUpn,
+                    Type = commonTargetInfo?.RecipientTypeDetails
+                        .Equals("SharedMailbox", StringComparison.OrdinalIgnoreCase) == true
+                        ? "shared"
+                        : "shared",
+                    DisplayName = string.IsNullOrWhiteSpace(commonTargetInfo?.DisplayName)
+                        ? "BAUER GROUP Info"
+                        : commonTargetInfo!.DisplayName,
+                    Alias = MailboxMatcher.LocalPart(commonUpn),
+                    Aliases = (commonTargetInfo?.EmailAddresses ?? new List<string>())
+                        .Select(MailboxMatcher.NormalizeEmail)
+                        .Where(address => !string.IsNullOrWhiteSpace(address))
+                        .Where(address => !address.Equals(
+                            MailboxMatcher.NormalizeEmail(commonUpn),
+                            StringComparison.OrdinalIgnoreCase))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList(),
+                    CreateIfMissing = true
+                },
+                Include = new List<string>
+                {
+                    "mail", "fax", "sms", "voice", "chat", "calendar", "contacts"
+                },
+                ExcludeArchives = new List<string> { "ADDRESS", "#001#Adressen" }
+            });
+
+            rows.Add(new MappingRow(
+                "COMMON",
+                "COMMON",
+                "",
+                "COMMON",
+                commonUpn,
+                commonTargetInfo is null ? "common-info-shared" : "common-info-target"));
+        }
+
         PrintRows(rows, domain);
 
-        var unmatched = rows.Count(row => string.IsNullOrWhiteSpace(row.TargetUpn));
+        var unmatched = rows.Count(row =>
+            string.IsNullOrWhiteSpace(row.TargetUpn) &&
+            !row.Method.Equals("system-user-disabled", StringComparison.OrdinalIgnoreCase));
         Console.WriteLine();
         Console.WriteLine(
             $"Config: {options.ConfigPath} · Mappings: {rows.Count} · offen: {unmatched}");
@@ -207,6 +304,16 @@ public static class ConfigCreateRunner
 
         using var session = new DavidComSession(options.ProgId);
         session.Logon(options.Logon);
+        if (!string.IsNullOrWhiteSpace(session.ServerName))
+        {
+            options.DavidServer = session.ServerName;
+        }
+
+        if (!string.IsNullOrWhiteSpace(session.DavidRoot))
+        {
+            options.ArchiveRoot = session.DavidRoot;
+        }
+
         return session.ListArchives(maxDepth: 2);
     }
 
@@ -249,6 +356,30 @@ public static class ConfigCreateRunner
              target.DisplayName.Contains("unverteilt", StringComparison.OrdinalIgnoreCase)));
 
         return existing?.PrimarySmtpAddress ?? "";
+    }
+
+    private static bool IsSystemUser(string path)
+    {
+        return LastPathSegment(path).Equals("00000000", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string LastPathSegment(string path)
+    {
+        return path.TrimEnd('\\', '/')
+            .Split('\\', '/')
+            .LastOrDefault()
+            ?? "";
+    }
+
+    private static string BuildFallbackEmail(string sourceEmail, string archiveId, string domain)
+    {
+        if (!string.IsNullOrWhiteSpace(sourceEmail) &&
+            !sourceEmail.EndsWith(".local", StringComparison.OrdinalIgnoreCase))
+        {
+            return sourceEmail;
+        }
+
+        return $"{archiveId}@{domain}";
     }
 
     private static string ResolveDomain(
@@ -294,9 +425,15 @@ public static class ConfigCreateRunner
         Console.WriteLine(new string('-', 130));
         foreach (var row in rows)
         {
+            var target = string.IsNullOrWhiteSpace(row.TargetUpn)
+                ? row.Method.Equals("system-user-disabled", StringComparison.OrdinalIgnoreCase)
+                    ? "(deaktiviert)"
+                    : "(offen)"
+                : row.TargetUpn;
+
             Console.WriteLine(
                 $"{row.SourcePath,-38} {Truncate(row.SourceEmail, 38),-38} " +
-                $"{(string.IsNullOrWhiteSpace(row.TargetUpn) ? "(offen)" : row.TargetUpn),-42} {row.Method}");
+                $"{target,-42} {row.Method}");
         }
 
         Console.WriteLine();

@@ -5,6 +5,10 @@ public interface IDavidSession : IDisposable
 {
     string ProgId { get; }
 
+    string? ServerName { get; }
+
+    string? DavidRoot { get; }
+
     void Logon(string logon);
 
     IDavidArchive OpenArchive(string path);

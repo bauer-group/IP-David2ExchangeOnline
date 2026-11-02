@@ -10,6 +10,12 @@ public sealed class DavidComSession : IDavidSession
     private object? _account;
     private object? _archiveRoot;
 
+    public string? ServerName =>
+        _account is null ? null : ComHelpers.GetFirstString(_account, "ServerName", "Server");
+
+    public string? DavidRoot =>
+        _account is null ? null : ComHelpers.GetFirstString(_account, "DavidRoot", "ArchiveRootPath");
+
     public DavidComSession(string progId)
     {
         ProgId = progId;

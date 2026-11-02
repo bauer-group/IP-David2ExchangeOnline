@@ -51,6 +51,10 @@ public sealed class MockDavidSession : IDavidSession
 
     public string ProgId => "mock";
 
+    public string? ServerName => "mock-david";
+
+    public string? DavidRoot => @"\\mock\david\archive";
+
     public void Logon(string logon)
     {
     }
