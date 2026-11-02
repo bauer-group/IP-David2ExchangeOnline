@@ -715,7 +715,18 @@ public sealed class MigrationRunner
                 faxDirectory,
                 $"fax-{faxLabel}-{date:yyyyMMdd-HHmm}.pdf");
 
-            if (FaxPdfConverter.TryConvertTiffToPdf(faxImage, pdfPath, out _))
+            var pdfMetadata = new FaxPdfMetadata(
+                subject,
+                from,
+                string.IsNullOrWhiteSpace(faxNumber) ? subject : $"Fax {faxNumber}",
+                string.IsNullOrWhiteSpace(faxNumber)
+                    ? "David;Fax"
+                    : $"David;Fax;{faxNumber}",
+                $"david2exchange {ToolInfo.Version}",
+                $"david2exchange {ToolInfo.Version}",
+                date);
+
+            if (FaxPdfConverter.TryConvertTiffToPdf(faxImage, pdfPath, pdfMetadata, out _))
             {
                 attachments.Add((Path.GetFileName(pdfPath), pdfPath));
             }

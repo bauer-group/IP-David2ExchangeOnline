@@ -6,11 +6,21 @@ using PdfSharp.Pdf;
 
 namespace David2Exchange.Output;
 
+internal sealed record FaxPdfMetadata(
+    string Title,
+    string Author,
+    string Subject,
+    string Keywords,
+    string Creator,
+    string Producer,
+    DateTime Created);
+
 internal static class FaxPdfConverter
 {
     public static bool TryConvertTiffToPdf(
         byte[] tiff,
         string outputPath,
+        FaxPdfMetadata metadata,
         out string? error)
     {
         error = null;
@@ -27,6 +37,14 @@ internal static class FaxPdfConverter
             }
 
             using var document = new PdfDocument();
+            document.Info.Title = metadata.Title;
+            document.Info.Author = metadata.Author;
+            document.Info.Subject = metadata.Subject;
+            document.Info.Keywords = metadata.Keywords;
+            document.Info.Creator = metadata.Creator;
+            document.Info.CreationDate = metadata.Created;
+            document.Info.ModificationDate = metadata.Created;
+
             for (var frame = 0; frame < frameCount; frame++)
             {
                 image.SelectActiveFrame(FrameDimension.Page, frame);
@@ -35,20 +53,22 @@ internal static class FaxPdfConverter
                 image.Save(png, ImageFormat.Png);
                 png.Position = 0;
 
-                var dpiX = image.HorizontalResolution > 0 ? image.HorizontalResolution : 200;
-                var dpiY = image.VerticalResolution > 0 ? image.VerticalResolution : 200;
                 var page = document.AddPage();
-                page.Width = XUnit.FromPoint(image.Width * 72.0 / dpiX);
-                page.Height = XUnit.FromPoint(image.Height * 72.0 / dpiY);
+                page.Width = XUnit.FromMillimeter(210);
+                page.Height = XUnit.FromMillimeter(297);
 
                 using var graphics = XGraphics.FromPdfPage(page);
                 using var xImage = XImage.FromStream(png);
-                graphics.DrawImage(
-                    xImage,
-                    0,
-                    0,
-                    page.Width.Point,
-                    page.Height.Point);
+
+                var pageWidth = page.Width.Point;
+                var pageHeight = page.Height.Point;
+                var scale = Math.Min(pageWidth / image.Width, pageHeight / image.Height);
+                var width = image.Width * scale;
+                var height = image.Height * scale;
+                var x = (pageWidth - width) / 2;
+                var y = (pageHeight - height) / 2;
+
+                graphics.DrawImage(xImage, x, y, width, height);
             }
 
             document.Save(outputPath);
