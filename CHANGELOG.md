@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.9.8](https://github.com/bauer-group/IP-David2Exchange/compare/v0.9.7...v0.9.8) (2026-11-02)
+
+### 🐛 Bug Fixes
+
+* **ews:** disable batching and import each item explicitly ([50ae539](https://github.com/bauer-group/IP-David2Exchange/commit/50ae539bb8c949bc08747ffd85465b3faf28bea8))
+
 ## [0.9.7](https://github.com/bauer-group/IP-David2Exchange/compare/v0.9.6...v0.9.7) (2026-11-02)
 
 ### 🐛 Bug Fixes
