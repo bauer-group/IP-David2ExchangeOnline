@@ -64,7 +64,7 @@ david:
   archiveRoot: \\192.168.0.10\David\Archive
 ```
 
-Fax image paths returned by David are rewritten from their `...\archive\...` suffix to this configured `archiveRoot` before reading. If the rewritten file still does not exist, the fax item is marked `failed` with the exact Image path instead of creating a text-only EML. In that case the `Image` value is a David-internal/container path, not a readable normal file; the migration account needs access to the archive share or the export must run on the David server.
+Fax images are **not** read through UNC paths. David returns `FaxItem.Image` as an internal packed-archive path for old items; direct file access is not valid. The tool only accepts image bytes supplied by the API. If the API returns only a packed path, the fax item is marked `failed` with that path instead of creating a text-only EML. A server-side David API export is required for those packed faxes.
 
 ## 3. Quick start (EXE)
 
