@@ -211,7 +211,7 @@ public sealed class EwsOutputTarget : IOutputTarget
         IReadOnlyList<OutputItem> items,
         CancellationToken cancellationToken)
     {
-        var pending = new List<(OutputItem Item, EmailMessage Message)>(items.Count);
+        var pending = new List<(OutputItem Item, EmailMessage Message, string? MessageId)>(items.Count);
         var results = new List<OutputResult>(items.Count);
 
         foreach (var item in items)
@@ -227,6 +227,7 @@ public sealed class EwsOutputTarget : IOutputTarget
             }
 
             var bytes = await File.ReadAllBytesAsync(item.StagedEmlPath, cancellationToken);
+            var messageId = TryReadMessageId(bytes);
             var message = new EmailMessage(service)
             {
                 MimeContent = new MimeContent("UTF-8", bytes),
@@ -252,7 +253,7 @@ public sealed class EwsOutputTarget : IOutputTarget
 
             message.SetExtendedProperty(PidTagReadReceiptRequested, false);
             message.SetExtendedProperty(PidTagDeliveryReportRequested, false);
-            pending.Add((item, message));
+            pending.Add((item, message, messageId));
         }
 
         if (pending.Count == 0)
@@ -273,9 +274,29 @@ public sealed class EwsOutputTarget : IOutputTarget
                 var item = pending[i].Item;
                 if (i < responses.Count && responses[i].Result == ServiceResult.Success)
                 {
-                    Interlocked.Increment(ref _written);
-                    results.Add(new OutputResult(item, true, null));
-                    continue;
+                    var verified = true;
+                    if (!string.IsNullOrWhiteSpace(pending[i].MessageId))
+                    {
+                        try
+                        {
+                            verified = await ExistsWithRetryAsync(
+                                pending[i].MessageId!,
+                                folder,
+                                cancellationToken);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.Error.WriteLine(
+                                $"  WARNUNG Batch-Verifikation {item.Id}: {ex.Message}");
+                        }
+                    }
+
+                    if (verified)
+                    {
+                        Interlocked.Increment(ref _written);
+                        results.Add(new OutputResult(item, true, null));
+                        continue;
+                    }
                 }
 
                 var batchError = i < responses.Count
@@ -936,6 +957,42 @@ public sealed class EwsOutputTarget : IOutputTarget
             new SearchFilter.IsEqualTo(ItemKeyProperty, BuildItemKey(item)),
             folder,
             cancellationToken);
+    }
+
+    private async Task<bool> ExistsWithRetryAsync(
+        string messageId,
+        Folder folder,
+        CancellationToken cancellationToken)
+    {
+        if (_service is null)
+        {
+            throw new InvalidOperationException("EwsOutputTarget wurde nicht geöffnet.");
+        }
+
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                var filter = new SearchFilter.IsEqualTo(
+                    EmailMessageSchema.InternetMessageId,
+                    messageId);
+                var view = new ItemView(1)
+                {
+                    PropertySet = new PropertySet(BasePropertySet.IdOnly)
+                };
+
+                var result = await _service.FindItems(folder.Id, filter, view);
+                return result.Items.Count > 0;
+            }
+            catch (Exception ex) when (
+                attempt < MaxRetries &&
+                IsTransientEwsError(ex) &&
+                !cancellationToken.IsCancellationRequested)
+            {
+                var delay = GetRetryDelay(ex, attempt);
+                await Task.Delay(delay, cancellationToken);
+            }
+        }
     }
 
     private async Task<bool> ExistsAsync(
