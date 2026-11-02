@@ -46,7 +46,8 @@ david2exchange map --config migration.yaml `
 
 ```powershell
 david2exchange sources --config migration.yaml
-david2exchange targets
+david2exchange targets --out targets.json
+david2exchange config create --config migration.yaml --targets-file targets.json --domain example.com --wave wave-1
 david2exchange discover --config migration.yaml --limit 10
 david2exchange run --config migration.yaml --limit 10 --dry-run
 david2exchange run --config migration.yaml --limit 10 --output local

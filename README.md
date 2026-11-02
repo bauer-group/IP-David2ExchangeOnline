@@ -62,15 +62,18 @@ Relative paths in `migration.yaml` resolve from the config folder. The default c
 # Version and basic check
 .\david2exchange.exe --version
 
-# Target mailboxes (User + Shared) once as JSON
-.\david2exchange.exe targets --json > targets.json
+# Target mailboxes (User + Shared) once as JSON.
+# Device-Code prompt goes to the console/stderr; the file contains only JSON.
+.\david2exchange.exe targets --out targets.json
 
-# Create migration.yaml and auto-map by e-mail address
+# Create migration.yaml and auto-map by e-mail address.
+# Unknown users get <david-id>@<domain> as a shared retention mailbox.
 .\david2exchange.exe config create `
   --config migration.yaml `
   --targets-file targets.json `
   --domain example.com `
-  --wave wave-1
+  --wave wave-1 `
+  --admin-upn admin@example.com
 
 # Optional: create missing Shared Mailboxes and grant FullAccess
 .\david2exchange.exe mailboxes ensure `
@@ -98,6 +101,20 @@ Relative paths in `migration.yaml` resolve from the config folder. The default c
 ```
 
 `--limit` is a test guard. Without `--limit`, `limits.limit` from `migration.yaml` applies (10 in the example). Use `--all` or `limits.limit: 0` for a complete/delta run over all pending items.
+
+### Mapping fallbacks
+
+`config create` applies these rules:
+
+| Source | Target |
+|---|---|
+| E-mail primary/alias matches a target | that target (user or shared) |
+| User archive without David e-mail | `<david-id>@<domain>`, shared, `createIfMissing: true` |
+| User archive with unmatched e-mail | source e-mail if it is a real domain, otherwise `<david-id>@<domain>`; shared |
+| `user\00000000` (David system user) | mapping written with `enabled: false` |
+| Any `COMMON` archive | **one** mapping for `COMMON` → `info@<domain>` (or `--unverteilt-upn`), shared, preserving all common subfolders |
+
+`mailboxes ensure --config migration.yaml --wave wave-1 --admin-upn ...` then creates the missing shared mailboxes and grants FullAccess. The UPN is controlled by `--domain`, `--unverteilt-upn`, or a per-entry `target.upn` in YAML.
 
 ## 4. Supported content
 
