@@ -397,8 +397,27 @@ public static class AppCli
     {
         try
         {
-            var json = args.Contains("--json", StringComparer.OrdinalIgnoreCase);
-            return Runner.TargetLister.RunAsync(json).GetAwaiter().GetResult();
+            var json = false;
+            string? outputPath = null;
+            for (var i = 0; i < args.Length; i++)
+            {
+                switch (args[i])
+                {
+                    case "--json":
+                        json = true;
+                        break;
+                    case "--out":
+                        outputPath = NextValue(args, ref i, "--out");
+                        break;
+                    default:
+                        throw new CliException($"Unbekannte Option: {args[i]}");
+                }
+            }
+
+            return Runner.TargetLister
+                .RunAsync(json, outputPath)
+                .GetAwaiter()
+                .GetResult();
         }
         catch (CliException ex)
         {
@@ -680,7 +699,7 @@ public static class AppCli
               david2exchange config create --config <yaml> [--targets-file <json>]
               david2exchange mailboxes ensure --config <yaml> [--admin-upn <upn>] [--dry-run]
               david2exchange sources --config <yaml> [--json]
-              david2exchange targets [--json]
+              david2exchange targets [--json] [--out targets.json]
               david2exchange map --config <yaml> [--list | --source <p> --target <upn> --id <id>]
               david2exchange discover --config <yaml> [--limit N|--all]
               david2exchange run --config <yaml> [--limit N|--all] [--dry-run] [--output local|ews]

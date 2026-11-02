@@ -21,9 +21,24 @@ public static class TargetLister
         WriteIndented = true
     };
 
-    public static async Task<int> RunAsync(bool json, CancellationToken cancellationToken = default)
+    public static async Task<int> RunAsync(
+        bool json,
+        string? outputPath = null,
+        CancellationToken cancellationToken = default)
     {
         var targets = await LoadAsync(cancellationToken);
+
+        if (!string.IsNullOrWhiteSpace(outputPath))
+        {
+            var fullPath = Path.GetFullPath(outputPath);
+            Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+            await File.WriteAllTextAsync(
+                fullPath,
+                JsonSerializer.Serialize(targets, JsonOptions),
+                cancellationToken);
+            Console.Error.WriteLine($"Targets geschrieben: {fullPath}");
+            return 0;
+        }
 
         if (json)
         {
@@ -54,9 +69,9 @@ public static class TargetLister
         var startInfo = new ProcessStartInfo("pwsh")
         {
             UseShellExecute = false,
-            RedirectStandardOutput = false,
-            RedirectStandardError = false,
-            CreateNoWindow = false
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
         };
         startInfo.ArgumentList.Add("-NoProfile");
         startInfo.ArgumentList.Add("-File");
@@ -69,7 +84,26 @@ public static class TargetLister
             using var process = Process.Start(startInfo)
                                 ?? throw new CliException("pwsh konnte nicht gestartet werden.");
 
+            process.OutputDataReceived += (_, eventArgs) =>
+            {
+                if (eventArgs.Data is not null)
+                {
+                    // Login-/Device-Code-Ausgaben gehören auf stderr, nicht ins JSON.
+                    Console.Error.WriteLine(eventArgs.Data);
+                }
+            };
+            process.ErrorDataReceived += (_, eventArgs) =>
+            {
+                if (eventArgs.Data is not null)
+                {
+                    Console.Error.WriteLine(eventArgs.Data);
+                }
+            };
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+
             await process.WaitForExitAsync(cancellationToken);
+            process.WaitForExit();
 
             if (process.ExitCode != 0)
             {
