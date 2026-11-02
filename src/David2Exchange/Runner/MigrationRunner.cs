@@ -684,8 +684,10 @@ public sealed class MigrationRunner
         var faxNumber = type == "3" ? Get("To") : "";
         var subject = !string.IsNullOrWhiteSpace(item.Subject)
             ? item.Subject
-            : type == "3" && !string.IsNullOrWhiteSpace(faxNumber)
-                ? $"Fax {faxNumber}"
+            : type == "3"
+                ? string.IsNullOrWhiteSpace(faxNumber)
+                    ? "[FAX]"
+                    : $"[FAX] {faxNumber}"
                 : $"[David {kind}] {item.Id}";
         var body = Get("BodyText");
         var html = Get("BodyHtml");
