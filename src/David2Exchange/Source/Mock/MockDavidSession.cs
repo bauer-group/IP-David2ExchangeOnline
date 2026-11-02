@@ -132,6 +132,12 @@ public sealed class MockDavidSession : IDavidSession
 
         public IEnumerable<IDavidItem> Items => _items;
 
+        public bool TrySetUnpacked(out string? error)
+        {
+            error = null;
+            return true;
+        }
+
         public void Add(params IDavidArchive[] archives)
         {
             _subArchives.AddRange(archives);

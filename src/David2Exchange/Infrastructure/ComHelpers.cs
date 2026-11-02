@@ -39,6 +39,16 @@ internal static class ComHelpers
         }
     }
 
+    public static void SetProperty(object target, string name, object? value)
+    {
+        target.GetType().InvokeMember(
+            name,
+            BindingFlags.SetProperty | BindingFlags.Public | BindingFlags.Instance,
+            null,
+            target,
+            new[] { value });
+    }
+
     public static object? Invoke(object target, string name, params object?[] args)
     {
         return target.GetType().InvokeMember(name, InvokeFlags, null, target, args);

@@ -28,6 +28,7 @@ public static class AppCli
             "run" => RunMigration(args[1..]),
             "verify" => RunVerify(args[1..]),
             "report" => RunReport(args[1..]),
+            "unpack" => RunUnpack(args[1..]),
             "version" or "--version" => PrintVersion(),
             _ => UnknownCommand(args[0])
         };
@@ -674,6 +675,47 @@ public static class AppCli
         return value is "-h" or "--help" or "help" or "/?";
     }
 
+    private static int RunUnpack(string[] args)
+    {
+        try
+        {
+            var options = new Runner.UnpackOptions
+            {
+                ConfigPath = Infrastructure.ToolPaths.DefaultConfigPath
+            };
+
+            for (var i = 0; i < args.Length; i++)
+            {
+                switch (args[i])
+                {
+                    case "--config":
+                        options.ConfigPath = NextValue(args, ref i, "--config");
+                        break;
+                    case "--dry-run":
+                        options.DryRun = true;
+                        break;
+                    default:
+                        throw new CliException($"Unbekannte Option: {args[i]}");
+                }
+            }
+
+            return Runner.UnpackRunner
+                .RunAsync(options)
+                .GetAwaiter()
+                .GetResult();
+        }
+        catch (CliException ex)
+        {
+            Console.Error.WriteLine($"Fehler: {ex.Message}");
+            return 3;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"FATAL: {ex.Message}");
+            return 2;
+        }
+    }
+
     private static int PrintVersion()
     {
         Console.WriteLine($"david2exchange {ToolInfo.Version}");
@@ -704,6 +746,7 @@ public static class AppCli
               david2exchange discover --config <yaml> [--limit N|--all]
               david2exchange run --config <yaml> [--limit N|--all] [--dry-run] [--output local|ews]
               david2exchange report --config <yaml>
+              david2exchange unpack --config <yaml> [--dry-run]
               david2exchange probe [Optionen]     David-COM testen, Objekte lokal schreiben
               david2exchange version              Version und Prozessbitbreite
               david2exchange --help               Diese Hilfe

@@ -70,6 +70,29 @@ internal sealed class DavidComArchive : IDavidArchive
         }
     }
 
+    public bool TrySetUnpacked(out string? error)
+    {
+        error = null;
+        try
+        {
+            if (!ComHelpers.TryGetProperty(_archive, "Options", out var options) ||
+                options is null)
+            {
+                error = "Archive.Options nicht verfügbar.";
+                return false;
+            }
+
+            ComHelpers.SetProperty(options, "BundleFiles", 0);
+            ComHelpers.Invoke(_archive, "Save");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return false;
+        }
+    }
+
     public IEnumerable<IDavidItem> Items
     {
         get

@@ -15,6 +15,7 @@ public sealed class MigrationRunner
     {
         var config = ConfigLoader.Load(options.ConfigPath);
         config.Validate(requireM365: false);
+        WarnIfFax(config);
 
         using var manifest = CreateManifest(config);
         var run = manifest.BeginRun("discover", ToolInfo.Version);
@@ -581,6 +582,24 @@ public sealed class MigrationRunner
             FirstSeenUtc = DateTime.UtcNow,
             LastSeenUtc = DateTime.UtcNow
         };
+    }
+
+    private static void WarnIfFax(MigrationConfig config)
+    {
+        var faxEnabled = config.Mailboxes.Any(mailbox =>
+            mailbox.Enabled &&
+            (mailbox.Include.Count == 0 ||
+             mailbox.Include.Any(value =>
+                 value.Equals("fax", StringComparison.OrdinalIgnoreCase) ||
+                 value.Equals("all", StringComparison.OrdinalIgnoreCase))));
+
+        if (faxEnabled)
+        {
+            Console.WriteLine(
+                "WARNUNG: Faxe werden nur migriert, wenn die David-Archive entpackt sind. " +
+                "Vorher 'david2exchange unpack --config migration.yaml' ausführen und " +
+                "die David-Datenbereinigung/Archiv-Optimierung durch den David-Administrator starten.");
+        }
     }
 
     private static bool IsIncluded(MailboxMapping mailbox, string kind)

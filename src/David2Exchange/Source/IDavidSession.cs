@@ -47,6 +47,8 @@ public interface IDavidArchive
     IEnumerable<IDavidArchive> SubArchives { get; }
 
     IEnumerable<IDavidItem> Items { get; }
+
+    bool TrySetUnpacked(out string? error);
 }
 
 public interface IDavidItem
