@@ -827,7 +827,22 @@ public sealed class MigrationRunner
         }
 
         var relative = normalized[(index + marker.Length)..].TrimStart('\\');
-        return Path.Combine(archiveRoot, relative);
+
+        // archiveRoot kann sowohl \\server\david als auch
+        // \\server\david\archive sein.
+        var direct = Path.Combine(archiveRoot, relative);
+        if (File.Exists(direct))
+        {
+            return direct;
+        }
+
+        var withArchive = Path.Combine(archiveRoot, "archive", relative);
+        if (File.Exists(withArchive))
+        {
+            return withArchive;
+        }
+
+        return direct;
     }
 
     private static string MimeTypeFor(string fileName)
