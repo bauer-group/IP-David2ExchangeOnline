@@ -70,6 +70,7 @@ public sealed class MigrationRunner
                         {
                             ExportItem(
                                 manifest,
+                                document,
                                 mailbox,
                                 config.David.ArchiveRoot,
                                 item,
@@ -333,6 +334,9 @@ public sealed class MigrationRunner
                             break;
                         }
 
+                        var documents = pending.ToDictionary(
+                            item => item.Key,
+                            StringComparer.OrdinalIgnoreCase);
                         var batches = pending
                             .Chunk(10)
                             .Select(batch => batch.Select(ToOutputItem).ToList())
@@ -354,8 +358,7 @@ public sealed class MigrationRunner
                                         mailbox.Id,
                                         result.Item.ArchivePath,
                                         result.Item.Id);
-                                    var document = manifest.Get(key);
-                                    if (document is null)
+                                    if (!documents.TryGetValue(key, out var document))
                                     {
                                         continue;
                                     }
@@ -438,6 +441,7 @@ public sealed class MigrationRunner
 
     private static OutputItem? ExportItem(
         LiteDbManifest manifest,
+        ItemDocument document,
         MailboxMapping mailbox,
         string archiveRoot,
         IDavidItem item,
@@ -446,9 +450,6 @@ public sealed class MigrationRunner
         string key,
         string emlStageDirectory)
     {
-        var document = manifest.Get(key)
-                       ?? throw new InvalidOperationException($"Manifest-Item {key} fehlt.");
-
         if (document.State == ItemState.Imported)
         {
             return null;
