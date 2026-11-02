@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.9.4](https://github.com/bauer-group/IP-David2Exchange/compare/v0.9.3...v0.9.4) (2026-11-02)
+
+### 🐛 Bug Fixes
+
+* **migration:** stream pending items in bounded batches ([c641614](https://github.com/bauer-group/IP-David2Exchange/commit/c641614a201f449cea5097fcb13e38186940b382))
+
 ## [0.9.3](https://github.com/bauer-group/IP-David2Exchange/compare/v0.9.2...v0.9.3) (2026-11-02)
 
 ### 🐛 Bug Fixes
