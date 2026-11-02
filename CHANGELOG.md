@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.6.1](https://github.com/bauer-group/IP-David2Exchange/compare/v0.6.0...v0.6.1) (2026-11-02)
+
+### 🐛 Bug Fixes
+
+* **migration:** reuse David session for discover and export ([b3cdefb](https://github.com/bauer-group/IP-David2Exchange/commit/b3cdefbd05ecb6c370b9c69a7aad7ddda6e56a62))
+
 ## [0.6.0](https://github.com/bauer-group/IP-David2Exchange/compare/v0.5.3...v0.6.0) (2026-11-02)
 
 ### 🚀 Features
