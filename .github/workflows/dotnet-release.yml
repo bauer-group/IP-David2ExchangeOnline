@@ -48,11 +48,34 @@ jobs:
     secrets: inherit
 
   # ---------------------------------------------------------------------------
+  # Tests (x86 like the tool itself; the reusable build job runs x64 only)
+  # ---------------------------------------------------------------------------
+  test:
+    name: 🧪 Test
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v7
+
+      - name: 🔧 Setup x86 .NET SDK
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+          architecture: x86
+
+      - name: 🧪 Run tests
+        shell: pwsh
+        run: dotnet test tests/David2Exchange.Tests/David2Exchange.Tests.csproj -c Release --nologo
+
+  # ---------------------------------------------------------------------------
   # Semantic release (main / dispatch only)
   # ---------------------------------------------------------------------------
   release:
     name: 📦 Create Release
-    needs: validate
+    needs: [validate, test]
     if: |
       (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
       github.event_name == 'workflow_dispatch'

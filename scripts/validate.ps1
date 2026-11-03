@@ -22,6 +22,10 @@ try {
     dotnet build David2Exchange.slnx -c Release
     Assert-True ($LASTEXITCODE -eq 0) 'dotnet build failed'
 
+    Write-Host '== tests =='
+    dotnet test tests\David2Exchange.Tests\David2Exchange.Tests.csproj -c Release --no-build
+    Assert-True ($LASTEXITCODE -eq 0) 'tests failed'
+
     Write-Host '== mock probe =='
     $mockOut = Join-Path $validationRoot 'mock'
     dotnet run --project src\David2Exchange -c Release --no-build -- probe --mock --out $mockOut --max-items 10 --export-eml 3
