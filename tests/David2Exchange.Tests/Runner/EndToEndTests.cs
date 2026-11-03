@@ -288,4 +288,85 @@ public sealed class EndToEndTests : IDisposable
         Assert.Contains("Item-Kennung", failed.LastError, StringComparison.Ordinal);
         Assert.Equal(3, manifest.GetSummary().Imported);
     }
+
+    [Fact]
+    public void Lone_surrogate_in_david_text_does_not_stop_the_item()
+    {
+        var high = (char)0xD83D;
+        var low = (char)0xDE00;
+        static bool NativeEml(string path)
+        {
+            File.WriteAllText(path, "Subject: nativ\r\n\r\nInhalt");
+            return true;
+        }
+
+        var root = _david.AddRoot(@"user\anna");
+        root.Sub("cal", "Kalender").Add("7", "C", "Termin", item => item.Set("BodyText", $"Text {high} mehr"));
+        root.Sub("todo", "Aufgaben").Add("12", "T", $"Auf{low}gabe");
+        var inbox = root.Sub("in", "Eingang");
+        inbox.Add("2", "M", $"Betreff {high}", item => item.NativeExport = NativeEml);
+        inbox.Add("2", "G", $"Ersatz {high}", item =>
+        {
+            item.NativeExport = _ => false;
+            item.Set("BodyText", $"Inhalt {high} mehr");
+        });
+        inbox.Add("4", "S", $"Kurz {low}", item => item.Set("BodyText", $"Inhalt {low} mehr"));
+        root.Sub("address", "Adressen").Add("1", "K", "Kontakt", item =>
+        {
+            // Ohne Datei hängt die Kennung am Inhalt und muss trotz Ersatzzeichen stabil bleiben.
+            item.Set("TextSource", null);
+            item.Set("DisplayName", $"Anna {high}");
+        });
+        root.Sub("p", $"Pro{high}jekt").Add("2", "F", "ok", item => item.NativeExport = NativeEml);
+        root.Sub($"Ar{high}chiv", "Archiv").Add("2", "A", "ok", item => item.NativeExport = NativeEml);
+        var config = Config("anna");
+
+        Assert.Equal(0, Run(config));
+
+        Assert.Equal(8, Summary(config).Imported);
+        Assert.Equal(8, _server.Items.Count);
+        Assert.Equal(
+            "Text � mehr",
+            _server.Items.Single(item => item.ElementName == "CalendarItem").Request!.Element(FakeEwsServer.T + "Body")!.Value);
+        Assert.Equal(
+            "Auf�gabe",
+            _server.Items.Single(item => item.ElementName == "Task").Request!.Element(FakeEwsServer.T + "Subject")!.Value);
+        Assert.Contains(_server.Items, item => item.FolderId == "root-inbox/Pro�jekt");
+
+        // Die Kennungen ändern sich nicht zwischen zwei Läufen, also geht nichts erneut hinaus.
+        Assert.Equal(0, Run(config));
+
+        Assert.Equal(8, _server.Items.Count);
+    }
+
+    [Fact]
+    public void Lone_surrogate_in_an_error_text_still_records_the_failure()
+    {
+        _david.AddRoot(@"user\anna").Sub("in", "Eingang")
+            .Add("3", "F", "Fax", item => item.FaxImagePath = $"\\\\srv\\fax\\F{(char)0xD83D}.tif");
+        var config = Config("anna");
+
+        Assert.Equal(1, Run(config));
+
+        using var manifest = new LiteDbManifest(config.Staging.Manifest);
+        var failed = Assert.Single(manifest.GetByState(ItemState.Failed));
+        Assert.Contains("F�.tif", failed.LastError, StringComparison.Ordinal);
+        Assert.True(manifest.HasCompleteWalk("anna", @"user\anna"));
+    }
+
+    [Fact]
+    public void Keys_that_differ_only_in_a_lone_surrogate_do_not_share_a_row()
+    {
+        var inbox = _david.AddRoot(@"user\anna").Sub("in", "Eingang");
+        inbox.Add("2", "A", "a", item => item.Set("TextSource", $"\\\\srv\\david\\ITEM{(char)0xD83D}.001"));
+        inbox.Add("2", "B", "b", item => item.Set("TextSource", $"\\\\srv\\david\\ITEM{(char)0xD83E}.001"));
+        var config = Config("anna");
+
+        Assert.Equal(0, Run(config));
+
+        // Sonst überschriebe die zweite Zeile die erste, ohne dass es jemand sieht.
+        var summary = Summary(config);
+        Assert.Equal(1, summary.Imported);
+        Assert.Equal(1, summary.Skipped);
+    }
 }

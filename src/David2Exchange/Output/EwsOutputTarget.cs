@@ -1270,7 +1270,8 @@ public sealed class EwsOutputTarget : IOutputTarget
     /// <summary>
     /// Der XML-Schreiber der EWS Managed API lehnt in XML 1.0 unzulässige Zeichen ab, bevor etwas
     /// gesendet wird. MIME ist nicht betroffen (Base64). Leerzeichen statt Löschen, damit Wörter
-    /// getrennt bleiben; das Manifest behält den Originaltext.
+    /// getrennt bleiben; das Manifest behält den Originaltext, nur ein einzelnes Surrogat kann es
+    /// nicht speichern.
     /// </summary>
     internal static string? XmlSafe(string? text)
     {

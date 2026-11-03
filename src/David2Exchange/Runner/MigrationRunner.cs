@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+using System.Diagnostics.CodeAnalysis;
 using System.Text;
 using David2Exchange.Cli;
 using David2Exchange.Config;
@@ -720,7 +721,7 @@ public sealed class MigrationRunner
         document.State = ItemState.Failed;
         document.StagingPath = null;
         document.ExportedUtc = null;
-        document.LastError = error;
+        document.LastError = ManifestText(error);
         manifest.Save(document);
         Console.Error.WriteLine($"  FEHLER {document.ArchivePath}\\{document.DavidId}: {error}");
     }
@@ -997,7 +998,7 @@ public sealed class MigrationRunner
         public (string Key, bool IsRepeatedFile) Next(WalkEntry entry)
         {
             var token = DavidItemIdentity.Of(entry.Item);
-            var key = $"{_mailboxId}|{entry.ArchivePath}|{token}";
+            var key = ManifestText($"{_mailboxId}|{entry.ArchivePath}|{token}");
             _seen.TryGetValue(key, out var occurrences);
             _seen[key] = occurrences + 1;
 
@@ -1174,17 +1175,17 @@ public sealed class MigrationRunner
         var isMailLike = DavidItemTypes.IsMailLike(type);
         var properties = isMailLike
             ? new Dictionary<string, string?>()
-            : new Dictionary<string, string?>(item.Properties);
+            : item.Properties.ToDictionary(pair => pair.Key, pair => ManifestText(pair.Value));
 
         return new ItemDocument
         {
             Key = key,
             MailboxId = mailbox.Id,
-            ArchivePath = entry.ArchivePath,
-            FolderPath = entry.FolderPath,
+            ArchivePath = ManifestText(entry.ArchivePath),
+            FolderPath = ManifestText(entry.FolderPath),
             DavidId = item.Id,
             ItemType = type,
-            Subject = item.Subject,
+            Subject = ManifestText(item.Subject),
             SizeBytes = item.SizeBytes,
             AttachmentCount = properties.TryGetValue("AttachmentCount", out var count) &&
                               int.TryParse(count, out var parsed)
@@ -1197,6 +1198,16 @@ public sealed class MigrationRunner
             FirstSeenUtc = DateTime.UtcNow,
             LastSeenUtc = DateTime.UtcNow
         };
+    }
+
+    /// <summary>
+    /// LiteDB schreibt strikt UTF-8 und lehnt ein einzelnes Surrogat ab; das Item käme nie ins
+    /// Manifest. Nur dieses wird zu U+FFFD, jeder gültige Text bleibt unverändert.
+    /// </summary>
+    [return: NotNullIfNotNull(nameof(text))]
+    private static string? ManifestText(string? text)
+    {
+        return text is null ? null : Encoding.UTF8.GetString(Encoding.UTF8.GetBytes(text));
     }
 
     private static int EffectiveLimit(MigrationConfig config, RunOptions options)
