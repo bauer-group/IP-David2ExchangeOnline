@@ -3,6 +3,16 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [1.0.1](https://github.com/bauer-group/IP-David2Exchange/compare/v1.0.0...v1.0.1) (2026-11-03)
+
+### 🐛 Bug Fixes
+
+* **mailboxes:** fixed shared mailbox creation in mailboxes ensure ([c240311](https://github.com/bauer-group/IP-David2Exchange/commit/c2403117b823572a2d022f9b09262b6e5d406580))
+
+### 🔧 Maintenance
+
+* **scripts:** added source.email to the validate config ([87979b8](https://github.com/bauer-group/IP-David2Exchange/commit/87979b84592861fbb26788094fc89b2b6e60c9ef))
+
 ## [1.0.0](https://github.com/bauer-group/IP-David2Exchange/compare/v0.10.0...v1.0.0) (2026-11-03)
 
 ### ⚠ BREAKING CHANGES
