@@ -3,6 +3,16 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [1.1.0](https://github.com/bauer-group/IP-David2Exchange/compare/v1.0.1...v1.1.0) (2026-11-03)
+
+### 🚀 Features
+
+* **mailboxes:** enabled sent item copies on shared mailboxes ([222c1f0](https://github.com/bauer-group/IP-David2Exchange/commit/222c1f0304a9158a347a69b03ace4c694d0889d1))
+
+### 🐛 Bug Fixes
+
+* **mailboxes:** made the sign-in name follow the mail address ([3a6a262](https://github.com/bauer-group/IP-David2Exchange/commit/3a6a262e933dafcfb3eba0c991874d8075de803a))
+
 ## [1.0.1](https://github.com/bauer-group/IP-David2Exchange/compare/v1.0.0...v1.0.1) (2026-11-03)
 
 ### 🐛 Bug Fixes
