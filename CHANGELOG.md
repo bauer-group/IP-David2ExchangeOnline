@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [1.2.0](https://github.com/bauer-group/IP-David2Exchange/compare/v1.1.0...v1.2.0) (2026-11-03)
+
+### 🚀 Features
+
+* **mailboxes:** removed surplus addresses from shared mailboxes ([0bd1e68](https://github.com/bauer-group/IP-David2Exchange/commit/0bd1e68b16eb2ccf53ef00989bc7f452d96672aa))
+
 ## [1.1.0](https://github.com/bauer-group/IP-David2Exchange/compare/v1.0.1...v1.1.0) (2026-11-03)
 
 ### 🚀 Features
