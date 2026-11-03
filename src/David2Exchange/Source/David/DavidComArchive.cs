@@ -11,6 +11,9 @@ internal sealed class DavidComArchive : IDavidArchive
     {
         RequestedPath = requestedPath;
         _archive = archive;
+
+        // Ein einmaliger Lesefehler machte sonst den Anzeigenamen zum Pfad und alle Kinder zu "fremd".
+        _ = ComHelpers.GetRequiredString(archive, "ID", "FullPath");
         ResolvedPath = DavidArchivePaths.GetRelativePath(archive) ?? requestedPath;
 
         // Schlüssel und Name bestimmen den Zielordner; ein Lesefehler darf nicht falsch einsortieren.
@@ -63,12 +66,61 @@ internal sealed class DavidComArchive : IDavidArchive
                 yield break;
             }
 
-            foreach (var raw in ComHelpers.EnumerateRequired(archives))
+            foreach (var raw in ComHelpers.EnumerateRequired(archives, continueAfterGap: true))
             {
-                var name = ComHelpers.GetRequiredString(raw, "DisplayName", "Name", "ArchiveName") ?? "sub";
-                var path = ResolvedPath.TrimEnd('\\') + "\\" + name;
-                yield return new DavidComArchive(path, raw);
+                yield return OpenChild(raw);
             }
+        }
+    }
+
+    /// <summary>Ein Wurf im Iterator beendete ihn und nähme alle folgenden Geschwister mit.</summary>
+    private IDavidArchive OpenChild(object raw)
+    {
+        try
+        {
+            var name = ComHelpers.GetRequiredString(raw, "DisplayName", "Name", "ArchiveName") ?? "sub";
+            return new DavidComArchive(ResolvedPath.TrimEnd('\\') + "\\" + name, raw);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return new UnreadableArchive(ResolvedPath.TrimEnd('\\') + "\\(nicht lesbar)", ex);
+        }
+    }
+
+    /// <summary>Meldet seinen Lesefehler erst beim Öffnen; der Durchlauf zählt ihn dann als Lücke.</summary>
+    private sealed class UnreadableArchive : IDavidArchive
+    {
+        private readonly Exception _failure;
+
+        public UnreadableArchive(string path, Exception failure)
+        {
+            RequestedPath = path;
+            ResolvedPath = path;
+            _failure = failure;
+        }
+
+        public string RequestedPath { get; }
+
+        public string ResolvedPath { get; }
+
+        public string Name => "(nicht lesbar)";
+
+        public string FolderKey => "(nicht lesbar)";
+
+        public int? ArchiveType => null;
+
+        public string FolderKind => "";
+
+        public int? DeclaredItemCount => null;
+
+        public IEnumerable<IDavidArchive> SubArchives => Array.Empty<IDavidArchive>();
+
+        public IEnumerable<IDavidItem> Items => throw new InvalidOperationException(_failure.Message, _failure);
+
+        public bool TrySetUnpacked(out string? error)
+        {
+            error = _failure.Message;
+            return false;
         }
     }
 
@@ -105,7 +157,7 @@ internal sealed class DavidComArchive : IDavidArchive
                 yield break;
             }
 
-            foreach (var raw in ComHelpers.EnumerateRequired(allItems))
+            foreach (var raw in ComHelpers.EnumerateRequired(allItems, continueAfterGap: true))
             {
                 try
                 {

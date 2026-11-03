@@ -4,6 +4,7 @@ namespace David2Exchange.Config;
 public sealed class ConfigCreateOptions
 {
     public string ConfigPath { get; set; } = "";
+    public bool Force { get; set; }
     public string Domain { get; set; } = "";
     public string? TargetsFile { get; set; }
     public string? SourcesFile { get; set; }

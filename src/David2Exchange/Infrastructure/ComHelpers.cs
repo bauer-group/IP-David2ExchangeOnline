@@ -141,7 +141,11 @@ internal static class ComHelpers
     /// Für den Migrationsumfang: Eine nicht lesbare Collection oder Lücke wird zum Fehler und
     /// verkleinert den Umfang nicht still. Alle David-Collections bieten laut Typbibliothek _NewEnum.
     /// </summary>
-    public static IEnumerable<object> EnumerateRequired(object? collection)
+    /// <param name="continueAfterGap">
+    /// Nur für Archivdurchläufe: Ein fehlgeschlagenes Item(i) erscheint als null, der nächste Eintrag
+    /// ist trotzdem lesbar. Die Lücke wird am Ende zum Fehler, das Archiv gilt als nicht vollständig gelesen.
+    /// </param>
+    public static IEnumerable<object> EnumerateRequired(object? collection, bool continueAfterGap = false)
     {
         if (collection is null)
         {
@@ -157,16 +161,31 @@ internal static class ComHelpers
 
         var declared = GetCount(collection);
         var delivered = 0;
+        var gaps = 0;
+        var gapsInARow = 0;
         foreach (var entry in enumerable)
         {
-            // Ein fehlschlagendes IEnumVARIANT::Next erscheint hier als null, und zwar endlos.
+            // Ein fehlschlagendes IEnumVARIANT::Next erscheint ebenfalls als null, aber endlos: darum die Grenze.
             if (entry is null)
             {
-                throw new InvalidOperationException($"David-Collection lieferte nach {delivered} Einträgen einen leeren Eintrag.");
+                gaps++;
+                gapsInARow++;
+                if (!continueAfterGap || gapsInARow >= MaxGapsInARow)
+                {
+                    break;
+                }
+
+                continue;
             }
 
+            gapsInARow = 0;
             delivered++;
             yield return entry;
+        }
+
+        if (gaps > 0)
+        {
+            throw new InvalidOperationException($"David-Collection lieferte {gaps} leere Einträge und {delivered} lesbare.");
         }
 
         if (declared is { } expected && delivered < expected)
@@ -174,6 +193,8 @@ internal static class ComHelpers
             throw new InvalidOperationException($"David-Collection lieferte nur {delivered} von {expected} Einträgen.");
         }
     }
+
+    private const int MaxGapsInARow = 64;
 
     public static IEnumerable<object> Enumerate(object? collection)
     {

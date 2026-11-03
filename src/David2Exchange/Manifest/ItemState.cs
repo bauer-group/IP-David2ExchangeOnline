@@ -8,5 +8,8 @@ public enum ItemState
     Importing,
     Imported,
     Failed,
-    Skipped
+    Skipped,
+
+    /// <summary>Nach einem vollständigen Lesen nicht mehr in der Quelle; blockiert verify nicht.</summary>
+    NotInSource
 }

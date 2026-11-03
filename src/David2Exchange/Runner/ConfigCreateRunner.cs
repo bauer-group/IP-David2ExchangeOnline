@@ -26,6 +26,14 @@ public static class ConfigCreateRunner
             options.ConfigPath = Infrastructure.ToolPaths.DefaultConfigPath;
         }
 
+        if (File.Exists(options.ConfigPath) && !options.Force && !options.DryRun)
+        {
+            throw new CliException(
+                $"Config '{Path.GetFullPath(options.ConfigPath)}' existiert bereits. 'config create' schreibt sie komplett " +
+                "neu: m365-Werte, Limits, map-Einträge und Handänderungen gingen verloren. Einzelne Zuordnungen mit 'map' " +
+                "ändern. Nur mit --force neu erzeugen.");
+        }
+
         var targets = await LoadTargetsAsync(options, cancellationToken);
         if (targets.Count == 0)
         {

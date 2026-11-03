@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 using David2Exchange.Cli;
 using David2Exchange.Infrastructure;
+using David2Exchange.Source.David;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
 
@@ -34,6 +35,17 @@ public sealed class MigrationConfig
         }
 
         DavidTimeZone.Resolve(David.Timezone);
+
+        // Der Quellpfad gehört zur Item-Kennung: Zwei Zuordnungen würden sich dieselben Zeilen teilen.
+        var sources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var mailbox in Mailboxes.Where(x => x.Enabled && !string.IsNullOrWhiteSpace(x.Source.ArchivePath)))
+        {
+            if (!sources.Add(DavidArchivePaths.Normalize(mailbox.Source.ArchivePath)))
+            {
+                throw new CliException(
+                    $"mailbox '{mailbox.Id}': Die Quelle '{mailbox.Source.ArchivePath}' ist bereits einem anderen aktiven Postfach zugeordnet.");
+            }
+        }
 
         if (Mailboxes.Count == 0)
         {
@@ -195,8 +207,23 @@ public static class ConfigLoader
             .Build();
 
         var yaml = File.ReadAllText(path);
-        var config = deserializer.Deserialize<MigrationConfig>(yaml)
-                     ?? throw new CliException($"Config '{path}' konnte nicht gelesen werden.");
+        MigrationConfig? config;
+        try
+        {
+            config = deserializer.Deserialize<MigrationConfig>(yaml);
+        }
+        catch (YamlDotNet.Core.YamlException ex)
+        {
+            // Die äußere Meldung lautet oft nur "Exception during deserialization".
+            throw new CliException(
+                $"Config '{path}' ist ungültig (Zeile {ex.Start.Line}, Spalte {ex.Start.Column}): " +
+                (ex.InnerException?.Message ?? ex.Message));
+        }
+
+        if (config is null)
+        {
+            throw new CliException($"Config '{path}' konnte nicht gelesen werden.");
+        }
 
         config.ConfigPath = Path.GetFullPath(path);
         return config;

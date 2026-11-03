@@ -33,6 +33,12 @@ public sealed class ItemDocument
 
     /// <summary>Ausgabe, die den Import bestätigt hat. Ein lokaler Testlauf zählt nicht für EWS.</summary>
     public string? ImportedTo { get; set; }
+
+    /// <summary>David-Datei; nur zusammen mit Typ, Betreff und Datum eindeutig, siehe FindImportedCopy.</summary>
+    public string? FileToken { get; set; }
+
+    /// <summary>Ziel-UPN, das eine generierte EML in From oder To nennt.</summary>
+    public string? StagedForUpn { get; set; }
 }
 
 /// <summary>Nachweis, dass ein Postfach zuletzt vollständig gelesen wurde.</summary>
@@ -70,5 +76,6 @@ public sealed class ManifestSummary
     public int Imported { get; set; }
     public int Failed { get; set; }
     public int Skipped { get; set; }
-    public int Total => Discovered + Exported + Importing + Imported + Failed + Skipped;
+    public int NotInSource { get; set; }
+    public int Total => Discovered + Exported + Importing + Imported + Failed + Skipped + NotInSource;
 }

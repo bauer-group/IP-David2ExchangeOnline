@@ -16,11 +16,19 @@ internal sealed class DavidComItem : IDavidItem
         "Viewed", "Read", "IsRead", "Gelesen",
         "Flags", "From", "To", "CC", "Folder", "Archive",
         "BodyText", "TextSource", "Caller",
-        "StartTime", "StopTime", "DueDate", "Location", "AllDayEvent", "IsRecurring",
+        "StartTime", "StopTime", "DueTime", "Location", "AllDayEvent", "IsRecurring", "Private", "ShowAs",
         "Attendees", "Recipients", "VCard",
-        "Status", "Priority", "PercentComplete", "Completed", "IsComplete", "Reminder",
-        "DisplayName", "FirstName", "LastName", "CompanyName", "Department",
-        "JobTitle", "FileAs", "EMail", "Email", "PhoneNumber", "FaxNumber", "SMSNumber"
+        "TaskStatus", "Percentage", "DateCompleted", "Reminder",
+        "DisplayName", "FirstName", "LastName", "EMail", "Email", "FaxNumber", "SMSNumber"
+    };
+
+    /// <summary>Am echten David gemessene Mitglieder von AddressItem; nur für Typ 1 gelesen.</summary>
+    private static readonly string[] ContactCandidates =
+    {
+        "Company", "Title", "MiddleInitial", "Salutation", "Birthday",
+        "Street", "ZipCode", "City", "State", "Country", "WebSite",
+        "PhoneOffice", "PhonePrivate", "PhoneMobile", "AltFaxNumber", "AltEMail", "VoiceBox",
+        "Notes", "FormattedNotes"
     };
 
     private readonly object _item;
@@ -309,9 +317,6 @@ internal sealed class DavidComItem : IDavidItem
             value,
             "PlainText",
             "Text",
-            "HTMLText",
-            "HTML",
-            "Html",
             "Plain");
         if (!string.IsNullOrWhiteSpace(text))
         {
@@ -379,10 +384,11 @@ internal sealed class DavidComItem : IDavidItem
     {
         var values = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var name in PropertyCandidates)
+        foreach (var name in Type == "1" ? PropertyCandidates.Concat(ContactCandidates) : PropertyCandidates)
         {
             // VCard meldet am echten David auf Mail, Termin und Aufgabe E_FAIL statt "nicht vorhanden".
-            var isReadable = name == "VCard"
+            // Bei FormattedNotes kostet ein Fehler nur die Formatierung, Notes hält den Text.
+            var isReadable = name is "VCard" or "FormattedNotes"
                 ? ComHelpers.TryGetProperty(_item, name, out var value)
                 : ComHelpers.TryGetRequiredProperty(_item, name, out value);
             if (!isReadable || value is null)
@@ -390,7 +396,7 @@ internal sealed class DavidComItem : IDavidItem
                 continue;
             }
 
-            if (name == "BodyText")
+            if (name is "BodyText" or "FormattedNotes")
             {
                 var plain = ResolveFormattedText(value);
                 if (!string.IsNullOrWhiteSpace(plain) && plain != "System.__ComObject")
@@ -432,16 +438,26 @@ internal sealed class DavidComItem : IDavidItem
             }
         }
 
+        if (!values.ContainsKey("BodyText") && values.TryGetValue("Notes", out var notes))
+        {
+            values["BodyText"] = notes;
+        }
+
+        // Die Priorität einer Aufgabe steht nur in Options; ein Fehler kostet nur dieses Feld.
+        if (Type == "12" && ComHelpers.TryGetProperty(_item, "Options", out var options) && options is not null)
+        {
+            values["Priority"] = ComHelpers.GetFirstString(options, "Priority");
+            ComHelpers.Release(options);
+        }
+
         values["ArchivePath"] = ComHelpers.GetFirstString(_item, "ArchivePath", "Archive")
                                  ?? _archivePath;
 
-        if (ComHelpers.TryGetProperty(_item, "Attachments", out var attachments))
+        // Fields.AttachCount ist auf Termin und Aufgabe auch mit Anhängen 0: Nur die Collection zählt.
+        var count = ComHelpers.GetCount(ReadAttachmentCollection());
+        if (count.HasValue)
         {
-            var count = ComHelpers.GetCount(attachments);
-            if (count.HasValue)
-            {
-                values["AttachmentCount"] = count.Value.ToString();
-            }
+            values["AttachmentCount"] = count.Value.ToString();
         }
 
         return values;

@@ -231,6 +231,8 @@ internal sealed class FakeItem : IDavidItem
 
     public List<DavidAttachmentInfo> AttachmentList { get; } = new();
 
+    public bool FailAttachmentCopy { get; set; }
+
     public IReadOnlyList<DavidAttachmentInfo> Attachments => AttachmentList;
 
     public byte[]? FaxImage { get; set; }
@@ -272,6 +274,13 @@ internal sealed class FakeItem : IDavidItem
         out string? error)
     {
         _david.Touch();
+        if (FailAttachmentCopy)
+        {
+            copiedPath = null;
+            error = "CopyOut fehlgeschlagen";
+            return false;
+        }
+
         copiedPath = Path.Combine(directory, attachment.FileName);
         System.IO.File.WriteAllBytes(copiedPath, new[] { (byte)attachment.Index, (byte)7 });
         error = null;

@@ -181,14 +181,15 @@ public sealed class DavidComSession : IDavidSession
             return result;
         }
 
-        if (!ComHelpers.TryGetProperty(_archiveRoot, "Archives", out var topLevel))
+        // Der Katalog bestimmt den Migrationsumfang: Eine Lücke darf keine Benutzer still auslassen.
+        if (!ComHelpers.TryGetRequiredProperty(_archiveRoot, "Archives", out var topLevel))
         {
             return result;
         }
 
         var emails = GetUserEmails();
 
-        foreach (var top in ComHelpers.Enumerate(topLevel))
+        foreach (var top in ComHelpers.EnumerateRequired(topLevel))
         {
             var topPath = DavidArchivePaths.GetRelativePath(top) ?? "";
             if (string.IsNullOrWhiteSpace(topPath))
@@ -218,12 +219,12 @@ public sealed class DavidComSession : IDavidSession
         IReadOnlyDictionary<string, string> emails)
     {
         if (depth > maxDepth ||
-            !ComHelpers.TryGetProperty(parent, "Archives", out var children))
+            !ComHelpers.TryGetRequiredProperty(parent, "Archives", out var children))
         {
             return;
         }
 
-        foreach (var child in ComHelpers.Enumerate(children))
+        foreach (var child in ComHelpers.EnumerateRequired(children))
         {
             var path = DavidArchivePaths.GetRelativePath(child);
             if (string.IsNullOrWhiteSpace(path))

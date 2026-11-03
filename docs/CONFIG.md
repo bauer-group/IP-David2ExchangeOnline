@@ -128,7 +128,8 @@ mailboxes:
 - **Benutzerarchiv:** `user\<Hex-ID>`; die ID ist nicht die laufende Nummer. `sources` zeigt die korrekten Pfade.
 - **Unverteilt:** als **ein** Mapping mit `archivePath: COMMON` eintragen. Alle Common-Unterordner werden rekursiv unter dem Ziel abgebildet. `excludeArchives` verhindert Adress-Teilarchive.
 - **Shared Mailbox:** UPN als `target.upn` eintragen. `mailboxes ensure` legt fehlende Shared Mailboxes an und setzt den Anmeldenamen auf diese UPN.
-- **`enabled`:** `false` schließt den Eintrag aus; `config create` setzt es für nicht automatisch zugeordnete Quellen auf `false`. `map` setzt es beim Mapping wieder auf `true`.
+- **`enabled`:** `false` schließt den Eintrag aus. `config create` setzt es nur für `user\00000000` auf `false`; nicht zugeordnete Benutzer bleiben `true` und erhalten ein Shared-Retention-Ziel. Soll ein Benutzer nicht migriert werden, vor `run` `enabled: false` setzen. Zwei aktive Einträge dürfen nicht dieselbe Quelle haben.
+- **Erneutes `config create`:** Eine vorhandene Config wird nur mit `--force` überschrieben; m365-Werte, Limits und Handänderungen gingen dabei verloren. Einzelne Zuordnungen mit `map` ändern.
 - **`wave`:** Gruppiert Postfächer in Migrationsblöcke. `discover/run/verify --wave <name>` bearbeitet nur diesen Block; pro Block kann auch eine eigene Config verwendet werden.
 - **`source.email`:** Pflicht für aktive Benutzerpostfächer; nur diese Adresse wird für das Mapping verwendet.
 - **`target.aliases`:** zusätzliche SMTP-Adressen, die beim Anlegen/Ergänzen gesetzt werden.

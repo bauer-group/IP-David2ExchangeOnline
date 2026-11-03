@@ -111,7 +111,11 @@ public static partial class SyntheticEml
             return list.Cast<MailboxAddress>().ToList();
         }
 
-        return new[] { ToAddress(text, domain) };
+        // Das Semikolon ist der Trenner aus DavidComItem: Jeder Eintrag zählt einzeln, echte Adressen bleiben echt.
+        var entries = text.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return entries.Length > 0
+            ? entries.Select(entry => ToAddress(entry, domain)).ToList()
+            : new[] { ToAddress(text, domain) };
     }
 
     /// <summary>Ein Zeilenumbruch in Betreff oder Name würde sonst Wörter zusammenziehen.</summary>

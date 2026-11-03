@@ -679,6 +679,11 @@ public sealed class EwsOutputTarget : IOutputTarget
         FolderId folder,
         CancellationToken cancellationToken)
     {
+        if (item.StagedEmlPath is { } bundle && !File.Exists(bundle))
+        {
+            return Failed(item, "Bereitgestellte Anhänge fehlen; der nächste Lauf exportiert sie erneut.", retryable: false);
+        }
+
         var mayExist = item.CheckExisting;
         var tokenRefreshed = false;
         string? lastError = null;
@@ -692,6 +697,7 @@ public sealed class EwsOutputTarget : IOutputTarget
                     var found = await FindExistingAsync(lease, folder, new[] { TargetKey(item) }, cancellationToken);
                     if (found.TryGetValue(TargetKey(item), out var existingId))
                     {
+                        await EnsureAttachmentsAsync(lease, existingId, item);
                         Interlocked.Increment(ref _alreadyPresent);
                         return new OutputResult(item, true, null, AlreadyPresent: true, TargetId: existingId);
                     }
@@ -752,17 +758,71 @@ public sealed class EwsOutputTarget : IOutputTarget
         {
             case "calendar":
                 var appointment = CreateAppointment(service, item);
+                AddAttachments(appointment, AttachmentBundle.Read(item.StagedEmlPath));
                 // Migrierte Termine dürfen nie Einladungen an echte Personen auslösen.
                 await appointment.Save(folder, SendInvitationsMode.SendToNone);
                 return appointment;
             case "contact":
                 var contact = CreateContact(service, item);
+                AddAttachments(contact, AttachmentBundle.Read(item.StagedEmlPath));
                 await contact.Save(folder);
                 return contact;
             default:
                 var task = CreateTask(service, item);
+                AddAttachments(task, AttachmentBundle.Read(item.StagedEmlPath));
                 await task.Save(folder);
                 return task;
+        }
+    }
+
+    private static void AddAttachments(Item target, IEnumerable<(string Name, byte[] Content)> attachments)
+    {
+        foreach (var (name, content) in attachments)
+        {
+            target.Attachments.AddFileAttachment(XmlSafe(name) ?? "Anhang", content);
+        }
+    }
+
+    /// <summary>
+    /// Save legt das Objekt und danach seine Anhänge mit zwei Aufrufen an. Riss der zweite ab, findet
+    /// die Suche ein Objekt ohne Anhänge; ohne diese Prüfung gälte es als vollständig übertragen.
+    /// </summary>
+    private static async Task EnsureAttachmentsAsync(ServiceLease lease, string itemId, OutputItem item)
+    {
+        var bundled = AttachmentBundle.Read(item.StagedEmlPath);
+        if (bundled.Count == 0)
+        {
+            return;
+        }
+
+        var stored = await Item.Bind(
+            lease.Service,
+            new ItemId(itemId),
+            new PropertySet(BasePropertySet.IdOnly, ItemSchema.Attachments));
+        var present = stored.Attachments.Select(attachment => attachment.Name).ToList();
+        var missing = new List<(string Name, byte[] Content)>();
+        foreach (var attachment in bundled)
+        {
+            // Gleiche Namen sind erlaubt: Jeder vorhandene Anhang deckt nur einen ab.
+            if (!present.Remove(XmlSafe(attachment.Name) ?? "Anhang"))
+            {
+                missing.Add(attachment);
+            }
+        }
+
+        if (missing.Count == 0)
+        {
+            return;
+        }
+
+        AddAttachments(stored, missing);
+        if (stored is Appointment appointment)
+        {
+            await appointment.Update(ConflictResolutionMode.AlwaysOverwrite, SendInvitationsOrCancellationsMode.SendToNone);
+        }
+        else
+        {
+            await stored.Update(ConflictResolutionMode.AlwaysOverwrite);
         }
     }
 
@@ -790,8 +850,23 @@ public sealed class EwsOutputTarget : IOutputTarget
             End = end,
             Location = GetText(item, "Location") ?? "",
             IsAllDayEvent = GetBool(item, "AllDayEvent") == true,
-            IsReminderSet = false
+            IsReminderSet = false,
+
+            // DvShowAsType laut Typbibliothek: Busy=0, Free=1, Tentative=2, OutOfOffice=3.
+            LegacyFreeBusyStatus = GetInt(item, "ShowAs") switch
+            {
+                1 => LegacyFreeBusyStatus.Free,
+                2 => LegacyFreeBusyStatus.Tentative,
+                3 => LegacyFreeBusyStatus.OOF,
+                _ => LegacyFreeBusyStatus.Busy
+            }
         };
+
+        // Sonst wäre ein privater Termin für jeden mit Leserechten auf dem Kalender sichtbar.
+        if (GetBool(item, "Private") == true)
+        {
+            appointment.Sensitivity = Sensitivity.Private;
+        }
 
         appointment.SetExtendedProperty(ItemKeyProperty, TargetKey(item));
         return appointment;
@@ -799,14 +874,22 @@ public sealed class EwsOutputTarget : IOutputTarget
 
     private Contact CreateContact(ExchangeService service, OutputItem item)
     {
-        var displayName = GetText(item, "DisplayName") ?? XmlSafe(item.Subject) ?? "(Kontakt)";
+        var fullName = string.Join(' ', new[] { GetText(item, "FirstName"), GetText(item, "LastName") }.OfType<string>());
+        var company = GetText(item, "Company") ?? GetText(item, "CompanyName");
+        var displayName = GetText(item, "DisplayName")
+                          ?? (fullName.Length > 0 ? fullName : null)
+                          ?? company
+                          ?? XmlSafe(item.Subject)
+                          ?? "(Kontakt)";
 
         var contact = new Contact(service)
         {
             DisplayName = displayName,
             GivenName = GetText(item, "FirstName") ?? "",
+            MiddleName = GetText(item, "MiddleInitial") ?? "",
             Surname = GetText(item, "LastName") ?? "",
-            CompanyName = GetText(item, "CompanyName") ?? "",
+            CompanyName = company ?? "",
+            BusinessHomePage = GetText(item, "WebSite") ?? "",
             Department = GetText(item, "Department") ?? "",
             JobTitle = GetText(item, "JobTitle") ?? "",
             FileAs = GetText(item, "FileAs") ?? displayName
@@ -818,28 +901,77 @@ public sealed class EwsOutputTarget : IOutputTarget
             contact.EmailAddresses[EmailAddressKey.EmailAddress1] = email;
         }
 
-        var phone = GetText(item, "PhoneNumber");
-        if (!string.IsNullOrWhiteSpace(phone))
+        if (GetText(item, "AltEMail") is { } secondEmail)
         {
-            contact.PhoneNumbers[PhoneNumberKey.BusinessPhone] = phone;
+            contact.EmailAddresses[EmailAddressKey.EmailAddress2] = secondEmail;
         }
 
-        var fax = GetText(item, "FaxNumber");
-        if (!string.IsNullOrWhiteSpace(fax))
+        void SetPhone(PhoneNumberKey key, string? number)
         {
-            contact.PhoneNumbers[PhoneNumberKey.BusinessFax] = fax;
+            if (!string.IsNullOrWhiteSpace(number))
+            {
+                contact.PhoneNumbers[key] = number;
+            }
         }
 
-        var mobile = GetText(item, "SMSNumber");
-        if (!string.IsNullOrWhiteSpace(mobile))
+        SetPhone(PhoneNumberKey.BusinessPhone, GetText(item, "PhoneOffice") ?? GetText(item, "PhoneNumber"));
+        SetPhone(PhoneNumberKey.HomePhone, GetText(item, "PhonePrivate"));
+        SetPhone(PhoneNumberKey.MobilePhone, GetText(item, "PhoneMobile") ?? GetText(item, "SMSNumber"));
+        SetPhone(PhoneNumberKey.BusinessFax, GetText(item, "FaxNumber"));
+        SetPhone(PhoneNumberKey.OtherFax, GetText(item, "AltFaxNumber"));
+
+        var street = GetText(item, "Street");
+        var zipCode = GetText(item, "ZipCode");
+        var city = GetText(item, "City");
+        var state = GetText(item, "State");
+        var country = GetText(item, "Country");
+        if (street is not null || zipCode is not null || city is not null || state is not null || country is not null)
         {
-            contact.PhoneNumbers[PhoneNumberKey.MobilePhone] = mobile;
+            contact.PhysicalAddresses[PhysicalAddressKey.Business] = new PhysicalAddressEntry
+            {
+                Street = street ?? "",
+                PostalCode = zipCode ?? "",
+                City = city ?? "",
+                State = state ?? "",
+                CountryOrRegion = country ?? ""
+            };
+        }
+
+        // Was EWS nicht als Feld kennt, steht im Text: Nichts wird verworfen.
+        var details = new List<string>();
+        void AddDetail(string label, string? value)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                details.Add($"{label}: {value}");
+            }
+        }
+
+        AddDetail("Anrede", GetText(item, "Salutation"));
+        AddDetail("Titel", GetText(item, "Title"));
+        AddDetail("Voicebox", GetText(item, "VoiceBox"));
+        var birthday = GetText(item, "Birthday");
+        if (DateTime.TryParse(birthday, CultureInfo.GetCultureInfo("de-DE"), DateTimeStyles.None, out var birthdayDate))
+        {
+            contact.Birthday = birthdayDate;
+        }
+        else
+        {
+            AddDetail("Geburtstag", birthday);
         }
 
         var html = GetText(item, "BodyHtml");
-        contact.Body = string.IsNullOrWhiteSpace(html)
-            ? new MessageBody(BodyType.Text, GetText(item, "BodyText") ?? "")
-            : new MessageBody(BodyType.HTML, html);
+        if (!string.IsNullOrWhiteSpace(html))
+        {
+            contact.Body = new MessageBody(
+                BodyType.HTML,
+                details.Count == 0 ? html : html + "<p>" + string.Join("<br>", details.Select(System.Net.WebUtility.HtmlEncode)) + "</p>");
+        }
+        else
+        {
+            var parts = new[] { GetText(item, "BodyText"), details.Count == 0 ? null : string.Join("\n", details) };
+            contact.Body = new MessageBody(BodyType.Text, string.Join("\n\n", parts.OfType<string>()));
+        }
 
         contact.SetExtendedProperty(ItemKeyProperty, TargetKey(item));
         return contact;
@@ -848,7 +980,21 @@ public sealed class EwsOutputTarget : IOutputTarget
     private EwsTask CreateTask(ExchangeService service, OutputItem item)
     {
         var html = GetText(item, "BodyHtml");
-        var completed = GetBool(item, "Completed") == true || GetBool(item, "IsComplete") == true;
+
+        // Gemessen: TaskStatus 0 = offen, 1 = in Arbeit, 2 = erledigt. Nicht gesetzte Daten stehen auf 1970.
+        var statusValue = GetInt(item, "TaskStatus");
+        var percent = Math.Clamp(GetInt(item, "Percentage") ?? 0, 0, 100);
+        var completedOn = TaskDate(item, "DateCompleted");
+        var isCompleted = statusValue == 2 || percent == 100 || completedOn is not null;
+
+        // Ohne Datum setzte Exchange den Tag der Migration; StatusTime ist die letzte Änderung in David.
+        var completeDate = completedOn ?? (item.ReceivedLocal is { Year: > 1970 } changed ? ToValidWallClock(changed) : null);
+        var startDate = TaskDate(item, "StartTime");
+        var dueDate = TaskDate(item, "DueTime");
+        if (startDate > dueDate)
+        {
+            startDate = dueDate;
+        }
 
         var task = new EwsTask(service)
         {
@@ -856,36 +1002,37 @@ public sealed class EwsOutputTarget : IOutputTarget
             Body = string.IsNullOrWhiteSpace(html)
                 ? new MessageBody(BodyType.Text, GetText(item, "BodyText") ?? "")
                 : new MessageBody(BodyType.HTML, html),
-            StartDate = GetDate(item, "StartTime") is { } startDate ? ToValidWallClock(startDate) : null,
-            DueDate = (GetDate(item, "DueDate") ?? GetDate(item, "StopTime")) is { } dueDate ? ToValidWallClock(dueDate) : null,
-            Status = completed ? EwsTaskStatus.Completed : MapTaskStatus(GetText(item, "Status")),
+            StartDate = startDate,
+            DueDate = dueDate,
+            Status = isCompleted
+                ? EwsTaskStatus.Completed
+                : statusValue == 1 || percent > 0 ? EwsTaskStatus.InProgress : EwsTaskStatus.NotStarted,
             Importance = MapImportance(GetText(item, "Priority")),
-            PercentComplete = GetInt(item, "PercentComplete") ?? (completed ? 100 : 0),
+            PercentComplete = isCompleted ? 100 : percent,
             IsReminderSet = false
         };
+
+        if (isCompleted && completeDate is { } date && date <= DateTime.Now)
+        {
+            task.CompleteDate = date;
+        }
 
         task.SetExtendedProperty(ItemKeyProperty, TargetKey(item));
         return task;
     }
 
-    private static EwsTaskStatus MapTaskStatus(string? status)
+    private DateTime? TaskDate(OutputItem item, string key)
     {
-        return status?.Trim().ToLowerInvariant() switch
-        {
-            "completed" or "erledigt" or "abgeschlossen" => EwsTaskStatus.Completed,
-            "inprogress" or "in progress" or "in bearbeitung" => EwsTaskStatus.InProgress,
-            "waiting" or "waitingonothers" or "wartet" => EwsTaskStatus.WaitingOnOthers,
-            "deferred" or "zurückgestellt" => EwsTaskStatus.Deferred,
-            _ => EwsTaskStatus.NotStarted
-        };
+        return GetDate(item, key) is { Year: > 1970 } date ? ToValidWallClock(date) : null;
     }
 
+    /// <summary>DvMessagePriority laut Typbibliothek: Normal=0, Low=1, Important=2.</summary>
     private static Importance MapImportance(string? priority)
     {
-        return priority?.Trim().ToLowerInvariant() switch
+        return priority?.Trim() switch
         {
-            "high" or "hoch" or "1" => Importance.High,
-            "low" or "niedrig" or "3" => Importance.Low,
+            "2" => Importance.High,
+            "1" => Importance.Low,
             _ => Importance.Normal
         };
     }

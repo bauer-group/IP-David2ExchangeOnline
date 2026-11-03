@@ -830,6 +830,186 @@ public sealed class EwsOutputTargetTests : IDisposable
         Assert.Single(_server.Items);
     }
 
+    private string Bundle(params string[] names)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "d2e-bundle-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var files = names.Select((name, index) =>
+        {
+            var path = Path.Combine(directory, index + ".bin");
+            File.WriteAllBytes(path, new byte[] { 1, 2, 3 });
+            return new SyntheticAttachment(name, path);
+        }).ToList();
+        var bundle = Path.Combine(directory, "bundle.eml");
+        AttachmentBundle.Write(bundle, files);
+        return bundle;
+    }
+
+    private static FakeReply AttachmentCreated()
+    {
+        return new FakeReply(Body: FakeEwsServer.Envelope(
+            """
+            <m:CreateAttachmentResponse><m:ResponseMessages><m:CreateAttachmentResponseMessage ResponseClass="Success">
+            <m:ResponseCode>NoError</m:ResponseCode><m:Attachments><t:FileAttachment><t:AttachmentId Id="att-1" /></t:FileAttachment></m:Attachments>
+            </m:CreateAttachmentResponseMessage></m:ResponseMessages></m:CreateAttachmentResponse>
+            """));
+    }
+
+    [Fact]
+    public async Task Task_attachment_is_sent_with_the_new_item()
+    {
+        await using var target = await OpenAsync();
+        string? request = null;
+        _server.Intercept = fake =>
+        {
+            if (fake.Operation == "CreateAttachment")
+            {
+                request = fake.Element.ToString();
+                return AttachmentCreated();
+            }
+
+            return null;
+        };
+        var item = NonMail("task", "todo", "Aufgabe") with { StagedEmlPath = Bundle("plan.pdf") };
+
+        var result = (await target.WriteBatchAsync(new[] { item }, CancellationToken.None))[0];
+
+        Assert.True(result.Success, result.Error);
+        Assert.Contains("plan.pdf", request, StringComparison.Ordinal);
+        Assert.Contains("AQID", request, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Found_item_without_its_attachments_gets_them_on_retry()
+    {
+        // Save legt Objekt und Anhänge getrennt an; dazwischen kann die Verbindung abreißen.
+        await using var target = await OpenAsync();
+        var created = 0;
+        _server.Intercept = fake =>
+        {
+            if (fake.Operation == "CreateAttachment")
+            {
+                return ++created == 1 ? new FakeReply(StatusCode: 500, Body: "") : AttachmentCreated();
+            }
+
+            return null;
+        };
+        var item = NonMail("task", "todo", "Aufgabe") with { StagedEmlPath = Bundle("plan.pdf") };
+
+        var result = (await target.WriteBatchAsync(new[] { item }, CancellationToken.None))[0];
+
+        Assert.True(result.Success, result.Error);
+        Assert.Equal(2, created);
+        Assert.Single(_server.Operations, operation => operation == "CreateItem");
+    }
+
+    [Theory]
+    [InlineData("2", "100", "1970-01-01T00:00:00", "Completed", "100")]
+    [InlineData("1", "25", "1970-01-01T00:00:00", "InProgress", "25")]
+    [InlineData("0", "0", "1970-01-01T00:00:00", "NotStarted", "0")]
+    [InlineData("2", "0", "2024-05-09T10:00:00", "Completed", "100")]
+    public async Task Task_fields_use_the_measured_david_members(string status, string percent, string completed, string expectedStatus, string expectedPercent)
+    {
+        await using var target = await OpenAsync();
+        string? request = null;
+        _server.Intercept = fake =>
+        {
+            if (fake.Operation == "CreateItem")
+            {
+                request = fake.Element.ToString();
+            }
+
+            return null;
+        };
+        var item = NonMail("task", "todo", "Aufgabe", new Dictionary<string, string?>
+        {
+            ["TaskStatus"] = status,
+            ["Percentage"] = percent,
+            ["DateCompleted"] = completed,
+            ["DueTime"] = "2024-05-10T17:00:00",
+            ["StartTime"] = "1970-01-01T00:00:00",
+            ["Priority"] = "2"
+        });
+
+        var result = (await target.WriteBatchAsync(new[] { item }, CancellationToken.None))[0];
+
+        Assert.True(result.Success, result.Error);
+        Assert.Contains($">{expectedStatus}</", request, StringComparison.Ordinal);
+        Assert.Contains($"PercentComplete>{expectedPercent}</", request, StringComparison.Ordinal);
+        Assert.Contains("DueDate>2024-05-10", request, StringComparison.Ordinal);
+        Assert.DoesNotContain("StartDate", request, StringComparison.Ordinal);
+        Assert.Contains("Importance>High</", request, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Contact_fields_use_the_measured_david_members()
+    {
+        await using var target = await OpenAsync();
+        string? request = null;
+        _server.Intercept = fake =>
+        {
+            if (fake.Operation == "CreateItem")
+            {
+                request = fake.Element.ToString();
+            }
+
+            return null;
+        };
+        var item = NonMail("contact", "address", "Kontakt", new Dictionary<string, string?>
+        {
+            ["FirstName"] = "Eva",
+            ["LastName"] = "Meier",
+            ["Company"] = "ACME GmbH",
+            ["PhoneOffice"] = "+49 1",
+            ["PhonePrivate"] = "+49 2",
+            ["PhoneMobile"] = "+49 3",
+            ["AltEMail"] = "eva@example.org",
+            ["Street"] = "Hauptstr. 1",
+            ["ZipCode"] = "94469",
+            ["City"] = "Deggendorf",
+            ["WebSite"] = "https://example.org",
+            ["Title"] = "Dr.",
+            ["BodyText"] = "Notiz"
+        });
+
+        var result = (await target.WriteBatchAsync(new[] { item }, CancellationToken.None))[0];
+
+        Assert.True(result.Success, result.Error);
+        foreach (var expected in new[] { "Eva Meier", "ACME GmbH", "+49 1", "+49 2", "+49 3", "eva@example.org", "Hauptstr. 1", "94469", "Deggendorf", "https://example.org", "Titel: Dr.", "Notiz" })
+        {
+            Assert.Contains(expected, request, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public async Task Private_and_free_appointment_keep_their_flags()
+    {
+        await using var target = await OpenAsync();
+        string? request = null;
+        _server.Intercept = fake =>
+        {
+            if (fake.Operation == "CreateItem")
+            {
+                request = fake.Element.ToString();
+            }
+
+            return null;
+        };
+        var item = NonMail("calendar", "cal", "Termin", new Dictionary<string, string?>
+        {
+            ["StartTime"] = "2024-07-01T15:00:00",
+            ["StopTime"] = "2024-07-01T15:30:00",
+            ["Private"] = "True",
+            ["ShowAs"] = "1"
+        });
+
+        var result = (await target.WriteBatchAsync(new[] { item }, CancellationToken.None))[0];
+
+        Assert.True(result.Success, result.Error);
+        Assert.Contains("Sensitivity>Private</", request, StringComparison.Ordinal);
+        Assert.Contains("LegacyFreeBusyStatus>Free</", request, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task Abort_from_a_nested_call_is_not_retried()
     {

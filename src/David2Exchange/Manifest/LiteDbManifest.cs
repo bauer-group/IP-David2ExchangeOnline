@@ -6,7 +6,7 @@ namespace David2Exchange.Manifest;
 
 public sealed class LiteDbManifest : IDisposable
 {
-    private const int CurrentSchemaVersion = 2;
+    private const int CurrentSchemaVersion = 3;
 
     private readonly LiteDatabase _database;
     private readonly ILiteCollection<ItemDocument> _items;
@@ -20,13 +20,34 @@ public sealed class LiteDbManifest : IDisposable
         var fullPath = Path.GetFullPath(path);
         _path = fullPath;
         Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
-        _database = new LiteDatabase($"Filename={fullPath};Upgrade=true");
+        var logPath = Path.Combine(
+            Path.GetDirectoryName(fullPath)!,
+            Path.GetFileNameWithoutExtension(fullPath) + "-log" + Path.GetExtension(fullPath));
+        if (!File.Exists(fullPath) && File.Exists(logPath))
+        {
+            // LiteDB spielte das verwaiste Log in ein neues Manifest ein und holte alte Zeilen zurück.
+            throw new CliException($"Neben dem fehlenden Manifest liegt noch '{logPath}'. Bitte auch diese Datei sichern und entfernen.");
+        }
+
+        try
+        {
+            _database = new LiteDatabase($"Filename={fullPath};Upgrade=true");
+        }
+        catch (IOException ex) when ((ex.HResult & 0xFFFF) == 32)
+        {
+            throw new IOException(
+                $"Das Manifest '{fullPath}' ist belegt, vermutlich durch einen laufenden david2exchange-Prozess. " +
+                "Je Manifest kann nur ein Prozess arbeiten; report und verify erst nach dessen Ende starten.",
+                ex);
+        }
+
         _items = _database.GetCollection<ItemDocument>("items");
         _runs = _database.GetCollection<RunDocument>("runs");
         _walks = _database.GetCollection<WalkDocument>("walks");
         _items.EnsureIndex(x => x.MailboxId);
         _items.EnsureIndex(x => x.State);
         _items.EnsureIndex(x => x.ReceivedLocal);
+        _items.EnsureIndex(x => x.FileToken);
     }
 
     public string DatabasePath => _path;
@@ -35,8 +56,9 @@ public sealed class LiteDbManifest : IDisposable
 
     /// <summary>
     /// Stellt vor einem schreibenden Lauf sicher, dass das Manifest vertrauenswürdig ist.
-    /// Manifeste vor Schema 2 konnten mehreren Items denselben EML-Pfad zuweisen; ihr
-    /// Status "Imported" sagt deshalb nichts darüber, ob der richtige Inhalt übertragen wurde.
+    /// Manifeste vor Schema 2 konnten mehreren Items denselben EML-Pfad zuweisen; ihr Status
+    /// "Imported" sagt nichts über den Inhalt. Vor Schema 3 enthielt die Kennung die Postfach-ID;
+    /// alte Zeilen passen nicht mehr und alles würde erneut gesendet.
     /// </summary>
     public void EnsureCurrentSchema()
     {
@@ -50,10 +72,11 @@ public sealed class LiteDbManifest : IDisposable
             if (_items.Count() > 0)
             {
                 throw new CliException(
-                    $"Das Manifest '{_path}' stammt aus einer älteren Version. Damals konnten sich " +
-                    "Eingang und Ausgang denselben EML-Staging-Pfad teilen, importierte Inhalte sind " +
-                    "daher nicht vertrauenswürdig. Bitte das Manifest samt '-log.db' und den Ordner " +
-                    "'eml-stage' sichern und entfernen, die Zielpostfächer prüfen und neu starten.");
+                    $"Das Manifest '{_path}' stammt aus einer älteren Version und passt nicht mehr: Die " +
+                    "Item-Kennung hat sich geändert, in frühen Versionen konnten sich Eingang und Ausgang " +
+                    "zudem eine EML-Datei teilen. Bitte das Manifest samt '-log.db' und den Ordner " +
+                    "'eml-stage' sichern und entfernen, die Zielpostfächer prüfen und neu starten. " +
+                    "Bereits übertragene Items werden danach erneut gesendet.");
             }
 
             _database.UserVersion = CurrentSchemaVersion;
@@ -124,7 +147,18 @@ public sealed class LiteDbManifest : IDisposable
             }
 
             existing.LastSeenUtc = DateTime.UtcNow;
+            existing.MailboxId = item.MailboxId;
             existing.ArchivePath = item.ArchivePath;
+
+            // _ID ist nur die aktuelle Position; die Identität steht im Key.
+            existing.DavidId = item.DavidId;
+            existing.FileToken = item.FileToken;
+            if (existing.State == ItemState.NotInSource)
+            {
+                // Wieder in der Quelle, z. B. nach dem Zurückverschieben oder Aufheben eines Ausschlusses.
+                existing.State = ItemState.Discovered;
+                existing.LastError = null;
+            }
 
             // Ein früherer Versuch kann das Item im bisherigen Ordner gespeichert haben, und die
             // Suche vor dem erneuten Senden läuft nur im aktuellen Zielordner.
@@ -169,6 +203,57 @@ public sealed class LiteDbManifest : IDisposable
             }
 
             _items.Update(items);
+        }
+    }
+
+    /// <summary>Zeilen, die verify für dieses Ziel blockieren würden.</summary>
+    public IReadOnlyList<ItemDocument> GetOpenOrElsewhere(string mailboxId, string targetName)
+    {
+        lock (_gate)
+        {
+            return _items.Find(x =>
+                x.MailboxId == mailboxId &&
+                (x.State == ItemState.Discovered ||
+                 x.State == ItemState.Exported ||
+                 x.State == ItemState.Importing ||
+                 x.State == ItemState.Failed ||
+                 (x.State == ItemState.Imported && x.ImportedTo != null && x.ImportedTo != targetName)))
+                .ToList();
+        }
+    }
+
+    /// <summary>
+    /// Sucht die bereits übertragene Kopie eines in David verschobenen Items. Die Dateinummer allein
+    /// reicht nicht: Am echten David kommt dieselbe Nummer in anderen Archiven mit anderem Inhalt vor.
+    /// Passt nichts, wird gesendet; im Zweifel entsteht also eine zweite Kopie, kein Verlust.
+    /// </summary>
+    public ItemDocument? FindImportedCopy(ItemDocument item, string targetName)
+    {
+        if (item.FileToken is null || item.ReceivedLocal is not { } received)
+        {
+            return null;
+        }
+
+        lock (_gate)
+        {
+            return _items.Find(x => x.FileToken == item.FileToken).FirstOrDefault(other =>
+                other.Key != item.Key &&
+                other.MailboxId == item.MailboxId &&
+                other.State == ItemState.Imported &&
+                string.Equals(other.ImportedTo ?? targetName, targetName, StringComparison.OrdinalIgnoreCase) &&
+                other.ItemType == item.ItemType &&
+                other.Subject == item.Subject &&
+                other.ReceivedLocal is { } date &&
+                Math.Abs((date - received).TotalSeconds) < 2);
+        }
+    }
+
+    /// <summary>Übertragene Items, die der Durchlauf seit diesem Zeitpunkt nicht mehr gesehen hat.</summary>
+    public int CountImportedNotSeenSince(string mailboxId, DateTime utc)
+    {
+        lock (_gate)
+        {
+            return _items.Count(x => x.MailboxId == mailboxId && x.State == ItemState.Imported && x.LastSeenUtc < utc);
         }
     }
 
@@ -252,7 +337,8 @@ public sealed class LiteDbManifest : IDisposable
                 Importing = Count(ItemState.Importing),
                 Imported = Count(ItemState.Imported),
                 Failed = Count(ItemState.Failed),
-                Skipped = Count(ItemState.Skipped)
+                Skipped = Count(ItemState.Skipped),
+                NotInSource = Count(ItemState.NotInSource)
             };
         }
     }

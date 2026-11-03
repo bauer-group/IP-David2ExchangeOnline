@@ -54,7 +54,8 @@ public static partial class DavidItemIdentity
         var parts = new[]
         {
             item.Type,
-            item.ReceivedLocal?.ToString("O"),
+            // Bei Kontakten ist StatusTime nur der Änderungsstempel und keine Identität.
+            item.Type == "1" ? null : item.ReceivedLocal?.ToString("O"),
             item.Subject,
             Get(item, "From"),
             Get(item, "To"),

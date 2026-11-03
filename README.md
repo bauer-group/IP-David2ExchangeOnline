@@ -105,9 +105,12 @@ Fax images: for **unpacked** David archives, `FaxItem.Image` is a real TIFF path
 .\david2exchange.exe run --config migration.yaml --wave wave-1 --limit 20 --dry-run
 .\david2exchange.exe run --config migration.yaml --wave wave-1 --limit 20 --output ews
 
-# Verify wave and write report
-.\david2exchange.exe verify --config migration.yaml --wave wave-1
+# Check the pilot in the report and in Outlook. verify stays red until a complete run:
 .\david2exchange.exe report --config migration.yaml --out data\report.html
+
+# Close the wave and verify it
+.\david2exchange.exe run --config migration.yaml --wave wave-1 --all --output ews
+.\david2exchange.exe verify --config migration.yaml --wave wave-1
 ```
 
 `--limit` is a test guard. Without `--limit`, `limits.limit` from `migration.yaml` applies. The example uses `0` (all); a value >0 limits the run. Use `--all` to override a configured limit.
@@ -131,13 +134,13 @@ Fax images: for **unpacked** David archives, `FaxItem.Image` is a real TIFF path
 | David content | Detection / probe | Migration | Notes |
 |---|---|---|---|
 | E-mails | yes | **yes** | David EML preferred; revision-safe HTML/plain fallback with attachments if David export fails. A mail without native export and without readable text or attachment fails visibly. |
-| Fax | yes | yes | Unpacked archive: TIFF from `FaxItem.Image` converted to a multi-page PDF (`fax-<nummer>-<datum>.pdf`); fallback subject is `[FAX] <nummer>` or `[FAX]`. Packed archive: fails visibly; no text-only EML. |
-| SMS | yes | yes | Attachment-preserving EML fallback; no native `DVEmlFromMailItem` call |
+| Fax | yes | yes | Unpacked archive: TIFF from `FaxItem.Image` converted to a multi-page PDF (`fax-<nummer>-<datum>.pdf`); fallback subject is `[FAX] <nummer>` or `[FAX]`. Packed archive: fails visibly; no text-only EML. On the measured server every checked fax and voice file was packed, so run `unpack` plus the David cleanup first. |
+| SMS | yes | yes | Attachment-preserving EML fallback; no native `DVEmlFromMailItem` call. An outgoing SMS takes its number from `Recipients`. |
 | Chat | yes | yes | Attachment-preserving EML fallback; no native `DVEmlFromMailItem` call |
-| Voice | yes | yes | EML with the original audio (`VoiceItem.Content` or attachment), caller as sender; **no transcription**. Not yet verified against a real voice item. |
-| Calendar | yes | yes | EWS Appointment with HTML body; recurring series currently as single appointment. An appointment with attachments fails visibly, because the attachments are not transferred. |
-| Contacts | yes | yes | EWS Contact field mapping (name, e-mail, phone, fax, mobile, notes) with HTML body. Attachments: as for calendar. |
-| Tasks | yes | yes | EWS Task with subject, HTML/plain body, start/due date, status, priority, percent complete. Attachments: as for calendar. |
+| Voice | yes | yes | EML with the original audio (`VoiceItem.Content` or attachment), caller as sender; **no transcription**. Fields measured on real voice items; the audio format itself is unverified, because all checked files were packed. |
+| Calendar | yes | yes | EWS Appointment with HTML body; private flag and free/busy status are kept. A recurring series arrives as a single appointment, with a note in the log (about 1 % of the measured appointments). Attendees are not transferred, so nobody gets an invitation. Attachments are transferred. |
+| Contacts | yes | yes | EWS Contact with name, company, two e-mail addresses, office, private and mobile phone, two fax numbers, postal address, web site, birthday and notes. Title, salutation and voice box go into the notes. Attachments are transferred. |
+| Tasks | yes | yes | EWS Task with subject, HTML/plain body, start/due date, status, priority, percent complete and completion date. Attachments are transferred. |
 | Folder tree | yes | yes | Inbox/Sent/Calendar/Contacts plus source subfolders |
 | Read state | yes | yes | mail only |
 | Deletions/moves in target | – | no | deliberately not synchronized |
@@ -191,7 +194,8 @@ A migration can take days for large mailboxes. The tool is designed for repeated
 2. New items (not yet in the LiteDB manifest) are added as `discovered`.
 3. Already imported items are skipped.
 4. New mail items are exported and imported in the next batch.
-5. Deleted/moved David items are **not** deleted in Exchange; they are only reported.
+5. Exchange is never changed afterwards. A deleted item stays there; `run` prints how many imported items are no longer in place. A moved item with the same file, type, subject and date stays in its old Exchange folder and appears as `skipped`. If David changes one of those, it arrives a second time. An edited contact has no David file: a new name or e-mail creates a second contact, other edits are not transferred.
+6. A row whose item is gone after a complete read (deleted, moved, excluded) becomes `NotInSource` and no longer blocks `verify`. It returns to work if the item comes back.
 
 Recommended operation:
 
@@ -250,7 +254,8 @@ discovered → exported → importing → imported
 - Items are identified by their David file (`TextSource`), not by `_ID`: `_ID` is only a position in the archive and shifts after deletions or a David cleanup.
 - Ctrl+C stops the run and lets running batches finish. A second Ctrl+C ends the process at once, for example when a David call hangs; a process kill also leaves a consistent manifest. Restart with the same `run` command.
 - `--limit` is safe: only the selected number of pending items is processed.
-- A manifest created before schema 2 is refused for `discover` and `run`, because items could share one EML file at that time and its `imported` state cannot be trusted. Back up and remove the manifest and `eml-stage`, check the target mailboxes, and start again.
+- A manifest created before schema 3 is refused for `discover` and `run`, because the item key changed and early versions could share one EML file. Back up and remove the manifest, its `manifest-log.db` if present, and `eml-stage`, check the target mailboxes, and start again. Items already in Exchange are then sent again.
+- `limits.limit` caps new items per mailbox and run. Items that already failed have their own budget of the same size, so repeated pilot runs keep advancing.
 
 `verify` is a manifest-level check for one target: no open or failed items for the selected wave, every imported item went to that target, and the latest run read each mailbox completely from its current source. The target is Exchange unless `--output local` says otherwise, so a local test run never counts as a finished migration. A limited pilot run after a full run makes `verify` fail until the next `run --all`. A target-folder count comparison via EWS is the next extension.
 

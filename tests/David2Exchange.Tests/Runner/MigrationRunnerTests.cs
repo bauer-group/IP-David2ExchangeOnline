@@ -622,7 +622,7 @@ public sealed class MigrationRunnerTests : IDisposable
 
         Assert.All(_output.Items, item =>
         {
-            Assert.StartsWith(@"box|user\10018000\in|", item.Item.ItemKey, StringComparison.Ordinal);
+            Assert.StartsWith(@"user\10018000|user\10018000\in|", item.Item.ItemKey, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("|0", item.Item.ItemKey, StringComparison.Ordinal);
         });
         Assert.Equal(2, _output.Items.Select(item => item.Item.ItemKey).Distinct().Count());
@@ -948,7 +948,7 @@ public sealed class MigrationRunnerTests : IDisposable
     }
 
     [Fact]
-    public void Appointment_with_attachments_fails_visibly_instead_of_losing_them()
+    public void Appointment_with_unexportable_attachments_fails_visibly_instead_of_losing_them()
     {
         _in.Add("7", "T", "Termin", item => item.Set("AttachmentCount", "2"));
 

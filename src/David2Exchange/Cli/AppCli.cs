@@ -271,6 +271,9 @@ public static class AppCli
                     case "--create-if-missing":
                         options.CreateIfMissing = true;
                         break;
+                    case "--force":
+                        options.Force = true;
+                        break;
                     case "--dry-run":
                         options.DryRun = true;
                         break;
