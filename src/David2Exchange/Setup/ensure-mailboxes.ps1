@@ -44,9 +44,22 @@ foreach ($target in $targets) {
                 -DisplayName $displayName `
                 -Alias $alias `
                 -PrimarySmtpAddress $upn `
-                -MicrosoftOnlineServicesID $upn `
                 -WhatIf:$WhatIf
             $created++
+
+            # Im Probelauf existiert das Postfach nicht; die Folgeschritte fänden es nicht.
+            if ($WhatIf) {
+                continue
+            }
+
+            # -MicrosoftOnlineServicesID gehört nicht zum Parametersatz von New-Mailbox -Shared.
+            # Die Übertragung braucht den Anmeldenamen nicht, deshalb bricht ein Fehler hier nichts ab.
+            try {
+                Set-Mailbox -Identity $upn -MicrosoftOnlineServicesID $upn
+            }
+            catch {
+                Write-Warning "Anmeldename von $upn nicht gesetzt: $($_.Exception.Message) Bei Bedarf im Microsoft 365 Admin Center ändern."
+            }
         }
         else {
             Write-Warning "User-Mailbox $upn fehlt; bitte lizenzieren/anlegen. Kein automatisches New-Mailbox für User."
@@ -59,8 +72,7 @@ foreach ($target in $targets) {
         [string]$target.Type -eq "shared" -and
         -not [string]::IsNullOrWhiteSpace($mailbox.UserPrincipalName) -and
         $mailbox.UserPrincipalName -ne $upn) {
-        Write-Warning "Shared Mailbox $upn hat UPN '$($mailbox.UserPrincipalName)'. " +
-            "Der Anmeldename muss manuell auf $upn geändert werden."
+        Write-Warning "Shared Mailbox $upn hat UPN '$($mailbox.UserPrincipalName)'. Der Anmeldename muss manuell auf $upn geändert werden."
     }
 
     if ($target.Aliases -and @($target.Aliases).Count -gt 0) {
