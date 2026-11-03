@@ -193,7 +193,7 @@ Das Skript:
 - legt fehlende **Shared Mailboxes** an und setzt den Anmeldenamen auf die Mailadresse (`Set-Mailbox -MicrosoftOnlineServicesID`). Das gilt auch für vorhandene Shared Mailboxes, deren Hauptadresse der `target.upn` entspricht; ein Alias wird nur gemeldet,
 - liest den Anmeldenamen am Ende zurück und meldet `UPN ... bestätigt`. `signInOpen` in der `DONE`-Zeile nennt, was offen blieb; dann den Befehl später erneut ausführen,
 - aktiviert bei Shared Mailboxes „Gesendete Elemente kopieren“ für „Als“ und „Im Auftrag“, auch bei vorhandenen. `sentCopyOpen` in der `DONE`-Zeile nennt, was fehlschlug,
-- setzt `target.aliases`,
+- setzt `target.aliases` und entfernt überzählige Adressen: Ein in diesem Lauf neu angelegtes Postfach behält nur Hauptadresse und `target.aliases`. Ein vorhandenes verliert nur eindeutig generierte Adressen (`G<32 Hex-Zeichen>@…` und `<Alias>@*.onmicrosoft.com`); andere Adressen bleiben und werden als `ALIAS … behält` genannt. Lehnt Exchange eine Adresse ab, zählt sie als `aliasesOpen`,
 - vergibt `FullAccess` ohne Auto-Mapping an den Admin,
 - unterstützt `--dry-run`.
 

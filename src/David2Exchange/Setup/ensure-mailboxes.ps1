@@ -23,6 +23,9 @@ $pendingSignIn = [System.Collections.ArrayList]::new()
 $failedSignIn = [System.Collections.ArrayList]::new()
 $sentCopies = 0
 $failedSentCopy = 0
+$addressCleanup = [System.Collections.ArrayList]::new()
+$aliasesRemoved = 0
+$aliasesOpen = 0
 
 # Benutzername = Mailadresse = UPN. In Exchange Online ersetzt -MicrosoftOnlineServicesID den UPN.
 # Bis die Änderung angekommen ist, warnt Exchange über die Abweichung; geprüft wird deshalb am Ende.
@@ -114,6 +117,14 @@ foreach ($target in $targets) {
         Set-Mailbox -Identity $upn -EmailAddresses @{ Add = @($target.Aliases) } -WhatIf:$WhatIf
     }
 
+    if ([string]$target.Type -eq "shared") {
+        [void]$addressCleanup.Add([pscustomobject]@{
+            Address = $upn
+            Keep    = @(@($upn) + @($target.Aliases) | Where-Object { $_ })
+            IsNew   = -not $mailbox
+        })
+    }
+
     if (-not [string]::IsNullOrWhiteSpace($AdminUpn)) {
         Write-Host "PERM  $upn -> $AdminUpn FullAccess"
         $null = Add-MailboxPermission `
@@ -145,5 +156,46 @@ foreach ($address in $pendingSignIn) {
     Write-Warning "Anmeldename von $address noch nicht bestätigt. Den Befehl später erneut ausführen."
 }
 
+# Exchange legt beim Anlegen weitere Adressen an, und der alte UPN bleibt nach dem Ändern als Adresse
+# zurück. Darum erst jetzt: Solange ein generierter UPN noch gilt, darf seine Adresse nicht weg.
+# Ein neues Postfach behält nur, was die Config nennt. Ein vorhandenes kann echte Aliasse haben,
+# die nicht in der Config stehen; dort gehen nur eindeutig generierte Adressen.
+foreach ($entry in $addressCleanup) {
+    if ($pendingSignIn -contains $entry.Address -or $failedSignIn -contains $entry.Address) {
+        continue
+    }
+
+    $current = Get-Mailbox -Identity $entry.Address -ErrorAction SilentlyContinue
+    if (-not $current) {
+        continue
+    }
+
+    $keep = @($entry.Keep | ForEach-Object { [string]$_ -replace '^smtp:', '' })
+    $secondary = @($current.EmailAddresses | Where-Object { $_ -cmatch '^smtp:' } | ForEach-Object { ([string]$_).Substring(5) })
+    foreach ($address in $secondary) {
+        if ($keep -contains $address) {
+            continue
+        }
+
+        $isGenerated = $address -match '^G[0-9a-f]{32}@' -or
+            $address -like "$($current.Alias)@*.onmicrosoft.com"
+        if (-not $entry.IsNew -and -not $isGenerated) {
+            Write-Host "ALIAS $($entry.Address) behält $address (nicht in der Config)"
+            continue
+        }
+
+        # Einzeln: Lehnt Exchange eine Adresse ab, gehen die übrigen trotzdem.
+        try {
+            Set-Mailbox -Identity $entry.Address -EmailAddresses @{ Remove = "smtp:$address" } -WarningAction SilentlyContinue -WhatIf:$WhatIf
+            Write-Host "ALIAS $($entry.Address) entfernt $address"
+            $aliasesRemoved++
+        }
+        catch {
+            $aliasesOpen++
+            Write-Warning "Adresse $address von $($entry.Address) nicht entfernt: $($_.Exception.Message)"
+        }
+    }
+}
+
 $signInOpen = $pendingSignIn.Count + $failedSignIn.Count
-Write-Host "DONE created=$created permissions=$permissions skipped=$skipped signInOpen=$signInOpen sentCopies=$sentCopies sentCopyOpen=$failedSentCopy whatIf=$($WhatIf.IsPresent)"
+Write-Host "DONE created=$created permissions=$permissions skipped=$skipped signInOpen=$signInOpen sentCopies=$sentCopies sentCopyOpen=$failedSentCopy aliasesRemoved=$aliasesRemoved aliasesOpen=$aliasesOpen whatIf=$($WhatIf.IsPresent)"

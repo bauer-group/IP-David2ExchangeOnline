@@ -38,6 +38,17 @@ public sealed class EnsureMailboxesScriptTests
     }
 
     [Fact]
+    public void Existing_mailboxes_only_lose_generated_addresses()
+    {
+        var script = Script();
+
+        Assert.Contains("-not $entry.IsNew -and -not $isGenerated", script, StringComparison.Ordinal);
+
+        // Nur sekundäre Adressen: "SMTP:" ist die Hauptadresse, daher der Vergleich mit Großschreibung.
+        Assert.Contains("-cmatch '^smtp:'", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Warning_text_is_not_concatenated_in_argument_mode()
     {
         // Write-Warning "a" + "b" bricht in PowerShell mit einem Parameterfehler ab.
