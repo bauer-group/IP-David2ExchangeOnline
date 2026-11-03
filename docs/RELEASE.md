@@ -6,6 +6,7 @@
 
 | Job | Zweck |
 |---|---|
+| `test` | Tests auf einem x86-SDK; ein Release setzt sie voraus |
 | `validate` | Build auf `windows-latest` (x86, .NET 10) |
 | `release` | Semantic Release nach Conventional Commits; schreibt `Directory.Build.props` und `CHANGELOG.md` |
 | `publish-binaries` | Self-contained Single-File `win-x86` als ZIP + SHA-256 am GitHub Release |

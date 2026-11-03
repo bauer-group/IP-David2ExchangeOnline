@@ -14,7 +14,8 @@ david2exchange targets --json > targets.json
 david2exchange config create `
   --config migration.yaml `
   --targets-file targets.json `
-  --domain example.com
+  --domain example.com `
+  --wave wave-1
 ```
 
 `config create` listet alle David-Benutzerarchive und Unverteilt-/Common-Archive, liest die David-E-Mail-Adresse aus `User.Addresses` und matcht **ausschließlich über die E-Mail-Adresse** (primär oder Alias) gegen User- und Shared-Mailboxen. Anzeigenamen werden nicht als Match-Schlüssel verwendet.
@@ -23,7 +24,9 @@ Nicht sicher zugeordnete Benutzer werden als Shared-Retention-Mailbox mit `<davi
 
 Mapping-Report: `migration.mapping.json` (Quelle, Anzeigename, Ziel, Methode).
 
-Offline-Variante (ohne laufenden David-Client), z. B. für Vorbereitung/Review:
+Eine vorhandene Config wird nur mit `--force` überschrieben. Dabei gehen m365-Werte, Limits und Handänderungen verloren; einzelne Zuordnungen deshalb mit `map` ändern.
+
+Getrennte Variante für einen Rechner ohne David-Client: `sources` läuft auf einem Rechner mit David-Client und braucht dort bereits eine gültige Config, `config create --sources-file` läuft danach ohne David.
 
 ```powershell
 david2exchange sources --config migration.yaml --json > sources.json
@@ -39,15 +42,17 @@ david2exchange map --config migration.yaml `
   --source "user\1001C000" `
   --target max.mustermann@example.com `
   --id max-mustermann `
-  --kind user
+  --kind user `
+  --source-email max.mustermann@example.com `
+  --wave wave-1
 ```
+
+Für einen neuen Eintrag ist `--source-email` Pflicht: Ohne `source.email` ist die ganze Config ungültig, und `sources`, `discover` und `run` enden mit Exit 3. Ohne `--wave` landet der Eintrag in `default` und wird von `run --wave wave-1` nicht erfasst.
 
 ### 1c. Danach prüfen und migrieren
 
 ```powershell
 david2exchange sources --config migration.yaml
-david2exchange targets --out targets.json
-david2exchange config create --config migration.yaml --targets-file targets.json --domain example.com --wave wave-1
 david2exchange discover --config migration.yaml --limit 10
 david2exchange run --config migration.yaml --limit 10 --dry-run
 david2exchange run --config migration.yaml --limit 10 --output local
@@ -83,7 +88,6 @@ m365:
 staging:
   root: .\data
   manifest: .\data\manifest.db
-  logs: .\logs
 
 limits:
   limit: 0                             # 0 = alle; >0 nur für Testläufe; --all überschreibt
@@ -93,7 +97,7 @@ limits:
   maxBatchMegabytes: 20                # EML-Größe je Batch; ein größeres Item läuft allein
 
 mailboxes:
-  - id: kbauer                         # eindeutig, technischer Schlüssel
+  - id: kbauer                         # eindeutig, nur ein Name: Umbenennen sendet nichts erneut
     enabled: true                      # false = wird nicht migriert (z. B. ungemappt)
     wave: wave-1                       # Migrationsblock/Gruppe
     source:
@@ -138,16 +142,21 @@ mailboxes:
 - **Verknüpfte Archive:** Archive, die David aus anderen Bereichen in den Baum eines Benutzers einhängt (z. B. `resource\hol`, freigegebene Kalender), werden nicht in dieses Postfach migriert; jedes wird im Log genannt. Soll ein solches Archiv migriert werden, braucht es einen eigenen Mapping-Eintrag.
 - **`include`:** steuert die Typen. `mail`, `fax`, `sms`, `voice`, `chat`, `calendar`, `contacts`, `tasks` oder `all`. Fehlt der Typ, wird das Item bewusst als `skipped` geführt.
 - **EML-Verhalten:** Nur Mail (Typ 2) wird über `DVEmlFromMailItem` als originale David-EML exportiert. Fax/SMS/Chat/Voice werden nicht nativ über diese Funktion exportiert, weil sie keine `MailItem`-Objekte sind und der native Aufruf den Prozess beenden kann. Bei Mail wird bei Fehlschlag eine generische EML mit Headern, Text und Anhängen erzeugt; der Fallback hängt **keinen** Provenienztext an den Body. Hat die Mail dann weder lesbaren Text noch Anhang, bleibt sie `failed`. Liefert David HTML, wird `multipart/alternative` mit `text/plain` und `text/html` erzeugt.
-- **Richtung:** Bei Fax/SMS/Voice/Chat bestimmt das David-Feld `Received` Absender und Empfänger. Eingehend: Rufnummer oder Kennung als Absender, Zielpostfach als Empfänger. Ausgehend: Zielpostfach als Absender, Rufnummer als Empfänger. Rufnummern erscheinen als Anzeigename mit einer abgeleiteten `@david.local`-Adresse. Header werden RFC-konform kodiert, das Datum trägt den Offset aus `david.timezone`.
-- **Voice:** wird als Mail mit der Originalaudiodatei als Anhang migriert (`VoiceItem.Content` oder David-Anhang), `Caller` wird Absender. Es wird **keine Transkription** erzeugt. Ohne Audiodatei bleibt das Item `failed`; es entsteht keine leere Nachricht. An einem echten Voice-Item noch nicht geprüft.
+- **Richtung:** Bei SMS und Chat bestimmt das David-Feld `Received` Absender und Empfänger. `FaxItem` und `VoiceItem` haben dieses Feld nicht: Ein Fax gilt als gesendet, wenn es im Ausgang liegt oder `To` gefüllt ist (gemessen ist `To` nur bei gesendeten Faxen gefüllt), Voice richtet sich nach dem Ordner. Bei ausgehenden SMS ist `To` leer, die Nummer kommt aus `Recipients`. Eingehend: Rufnummer oder Kennung als Absender, Zielpostfach als Empfänger. Ausgehend: Zielpostfach als Absender, Rufnummer als Empfänger. Rufnummern erscheinen als Anzeigename mit einer abgeleiteten `@david.local`-Adresse. Header werden RFC-konform kodiert, das Datum trägt den Offset aus `david.timezone`.
+- **Voice:** wird als Mail mit der Originalaudiodatei als Anhang migriert (`VoiceItem.Content`), `Caller` wird Absender. Es wird **keine Transkription** erzeugt. Ist die genannte Datei nicht lesbar, bleibt das Item `failed`; es entsteht keine leere Nachricht. Felder an echten Voice-Items gemessen; alle geprüften Dateien lagen in gepackten Archiven, das Audioformat ist daher ungeprüft. Vorher `unpack` wie beim Fax.
 - **SMS/Chat:** ohne lesbaren Text und ohne Anhang bleibt das Item `failed`.
 - **Fax:** liest bei **entpackten** Archiven das Original-TIFF aus `FaxItem.Image`, konvertiert es in ein mehrseitiges PDF in physisch korrekter Größe (auch bei Standardauflösung 204 x 98 dpi) und benennt es `fax-<faxnummer>-<datum>.pdf`. Datum und Lesestatus stammen aus der `Fields`-Collection, weil `FaxItem` keine eigenen Felder dafür hat. Weitere David-Anhänge bleiben zusätzlich erhalten. Wenn David keinen Betreff liefert, wird `[FAX] <faxnummer>` bzw. `[FAX]` als Betreff verwendet. Bei **gepackten** Archiven existiert der Image-Pfad nicht; das Item bleibt `failed`, auch wenn David Anhänge nennt, und es wird keine Text-EML erzeugt. Vorher Archive mit `david2exchange unpack` entpacken und die David-Bereinigung laufen lassen; siehe [UNPACK.md](UNPACK.md).
 - **Ablauf:** Ein einziger STA-Thread liest David, exportiert EML und füllt eine begrenzte Queue. Bis zu `limits.workers` Worker übertragen parallel in Batches. Jedes gespeicherte Item wird über seine `ItemId` samt Elternordner und `ItemKey` geprüft; Items werden nie verschoben. Bei unbekanntem Ausgang (Timeout, Verbindungsabbruch) wird vor dem erneuten Senden im Zielordner gesucht. Details: README, Abschnitt 5.
-- **Anhänge an Terminen, Kontakten und Aufgaben:** werden nicht übertragen. Solche Objekte bleiben sichtbar `failed`, statt ohne ihre Dateien als übertragen zu gelten.
-- **Lesefehler:** Ein COM-Fehler gilt nie als „keine Daten“. Ein nicht lesbares Item oder Archiv hält die übrigen nicht auf, das Postfach gilt danach aber als fehlgeschlagen.
+- **Anhänge an Terminen, Kontakten und Aufgaben:** werden übertragen (gemessen: 17 % der Aufgaben haben welche). Der David-Thread legt sie im Staging ab, die Worker senden sie mit dem Objekt. Das Speichern braucht zwei EWS-Aufrufe; reißt der zweite ab, ergänzt die nächste Wiederholung die fehlenden Anhänge. Lässt sich ein Anhang nicht aus David lesen, bleibt das Objekt sichtbar `failed`.
+- **Termine:** Betreff, Zeit, Ort, Text, Ganztägig, „privat“ und frei/belegt werden übertragen. Serientermine kommen als Einzeltermin an, mit Hinweis im Log. Teilnehmer werden nicht übertragen, damit niemand eine Einladung bekommt. Erinnerungen sind aus.
+- **Kontakte:** Name, Firma, zwei Mailadressen, Telefon Büro, privat und mobil, zwei Faxnummern, Postanschrift (als geschäftlich), Webseite, Geburtstag und Notizen. Titel, Anrede und Voicebox stehen in den Notizen.
+- **Aufgaben:** Betreff, Text, Beginn, Fälligkeit, Status, Priorität, Fortschritt und Erledigungsdatum. Fehlt das Erledigungsdatum einer erledigten Aufgabe, gilt die letzte Änderung in David.
+- **Verschobene und gelöschte Items:** Exchange wird nachträglich nie geändert. Ein in David verschobenes Item mit gleicher Datei, gleichem Typ, Betreff und Datum bleibt im bisherigen Zielordner und steht als `skipped` im Report; ändert David einen dieser Werte, kommt es ein zweites Mal an. Zeilen, deren Item nach einem vollständigen Lesen fehlt, werden `NotInSource` und blockieren `verify` nicht; kommt das Item zurück, geht es normal weiter. Ein geänderter Kontakt hat keine David-Datei: Neuer Name oder neue Mailadresse ergeben einen zweiten Kontakt, andere Änderungen werden nicht übertragen.
+- **Lesefehler:** Ein COM-Fehler gilt nie als „keine Daten“. Ein nicht lesbares Item, ein leerer Eintrag in einer David-Collection oder ein nicht lesbares Archiv hält die übrigen nicht auf, das Postfach gilt danach aber als fehlgeschlagen, und `verify` bleibt rot. Bleibt die Lücke dauerhaft, das Archiv per `excludeArchives` ausschließen. Der Archivkatalog für `config create`, `sources` und `unpack` ist strikt: Eine Lücke dort bricht den Befehl ab, statt Benutzer still auszulassen.
 - **Speicher:** Die Queue ist begrenzt; das Postfach wird nie komplett geladen. Termine, Kontakte und Aufgaben behalten ihre Eigenschaften im Manifest, Mails nur ihre EML-Datei.
+- **Log:** Das Tageslog liegt immer in `logs` neben der EXE. `staging.logs` aus älteren Configs wird ignoriert.
 - **Staging-Aufräumen:** Nach bestätigtem Import wird die EML gelöscht; Arbeitsdateien für Anhänge schon beim Erzeugen der EML. Ist für ein Postfach nichts mehr offen, wird sein Staging-Ordner entfernt. Fehlgeschlagene Items behalten ihre EML für den nächsten Versuch.
-- **Mehrere Quellen auf ein Ziel:** erlaubt; `id` muss eindeutig sein.
+- **Mehrere Quellen auf ein Ziel:** erlaubt; `id` muss eindeutig sein. Eine Quelle darf nur einem aktiven Eintrag zugeordnet sein.
 - **Typen:** 1 = Adresse/Kontakt, 2 = Mail, 3 = Fax, 4 = SMS, 5 = Voice, 6 = Chat/TMail, 7 = Kalender, 12 = Aufgabe. Der Lokal-Export schreibt alle unterstützten Typen; EWS erzeugt Mail, Termin, Kontakt oder Aufgabe.
 
 ## 3. Quellen listen
@@ -182,10 +191,10 @@ david2exchange map --config migration.yaml `
 
 Das Kommando:
 
-- legt den Eintrag an oder aktualisiert ihn über `id`,
+- legt den Eintrag an oder aktualisiert ihn über `id` (für einen neuen Eintrag `--source-email` angeben, siehe 1b),
 - schreibt die YAML mit Backup (`migration.yaml.bak`),
 - validiert die UPN grob (`@`),
-- setzt `include: [mail]`, falls noch nicht gesetzt.
+- setzt alle unterstützten Typen in `include`, falls noch nichts gesetzt ist.
 
 `--list` zeigt die aktuellen Mappings.
 
@@ -206,11 +215,16 @@ Das Skript verbindet sich interaktiv mit Exchange Online, legt fehlende **Shared
 ## 7. Wellen validieren
 
 ```powershell
+# Pilot: danach Report und Outlook prüfen; verify bleibt hier absichtlich rot
 david2exchange run --config migration.yaml --wave wave-1 --limit 10 --output ews
+david2exchange report --config migration.yaml --out data\report.html
+
+# Abschluss der Welle
+david2exchange run --config migration.yaml --wave wave-1 --all --output ews
 david2exchange verify --config migration.yaml --wave wave-1
 ```
 
-`verify` prüft, dass für die Auswahl keine offenen oder fehlgeschlagenen Manifest-Items mehr existieren. Die Zielordner-Zählung per EWS ist der nächste Ausbauschritt.
+`verify` prüft für die Auswahl: keine offenen oder fehlgeschlagenen Items, alle Importe im geprüften Ziel (Standard Exchange, sonst `--output local`) und ein vollständiges Lesen durch den letzten Lauf. Eine Zählung im Zielordner findet nicht statt. Eine spätere Änderung von `include` oder `excludeArchives` fällt `verify` erst nach dem nächsten Lauf auf.
 
 ## 8. Setup
 
@@ -220,10 +234,10 @@ david2exchange setup --config migration.yaml --check
 david2exchange setup --config migration.yaml --remove
 ```
 
-Das Setup schreibt `m365.tenantId`, `clientId` und `certThumbprint` in die YAML und legt ein Allowlist-Backup `setup-backup-<datum>.json` an. Voraussetzung: Global Admin oder Application Admin + Exchange Admin, `pwsh` 7.4+.
+Das Setup schreibt `m365.tenantId`, `clientId` und `certThumbprint` in die YAML und legt ein Allowlist-Backup `setup-backup-<datum>.json` an. **Es setzt `EwsEnabled=true` ohne Rückfrage für den ganzen Tenant**; Details und Prüfschritte in [SETUP.md](SETUP.md). Voraussetzung: Global Admin oder Application Admin + Exchange Admin, `pwsh` 7.4+.
 
 ## 9. Grenzen
 
 - `targets` benötigt eine interaktive Exchange-Online-Anmeldung; in CI nicht testbar.
-- `setup` und `targets` sind noch nicht gegen einen echten Tenant validiert.
+- `setup`, `targets` und die aktuelle Übertragung sind noch nicht gegen einen echten Tenant validiert.
 - Das Mapping ist derzeit eindimensional: ein Quellarchiv → eine Ziel-UPN. Mehrere Quellen auf ein Ziel sind über mehrere Einträge möglich.

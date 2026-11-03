@@ -2,7 +2,7 @@
 
 Tobit David → Exchange Online migration tool for Windows x86. The tool runs on a workstation with the David client installed; it is not installed as a service.
 
-**Current status:** mail, fax, SMS, voice, chat, calendar, contacts, tasks and David folder hierarchy are implemented. Mail uses David's original EML export (`DVEmlFromMailItem`) first; if that fails, a revision-safe HTML/plain fallback is generated. Fax uses the original TIFF from `FaxItem.Image` for unpacked archives; packed faxes fail visibly. SMS/chat/voice use attachment-preserving EML fallbacks. Calendar becomes an EWS appointment, contacts become EWS contacts, tasks become EWS tasks. Messages are written into the existing target folders (`Inbox`, `Sent Items`, `Drafts`, `Deleted Items`, `Junk Email`, `Calendar`, `Contacts`, `Tasks`) and their subfolders. The mail EWS path has been tested against a real tenant; calendar/task/contact EWS paths still need validation. See [Supported content](#supported-content).
+**Current status:** mail, fax, SMS, voice, chat, calendar, contacts, tasks and David folder hierarchy are implemented. Mail uses David's original EML export (`DVEmlFromMailItem`) first; if that fails, a revision-safe HTML/plain fallback is generated. Fax uses the original TIFF from `FaxItem.Image` for unpacked archives; packed faxes fail visibly. SMS/chat/voice use attachment-preserving EML fallbacks. Calendar becomes an EWS appointment, contacts become EWS contacts, tasks become EWS tasks. Messages are written into the existing target folders (`Inbox`, `Sent Items`, `Drafts`, `Deleted Items`, `Junk Email`, `Calendar`, `Contacts`, `Tasks`) and their subfolders. Earlier versions imported mail into a real tenant. The current transfer pipeline, including calendar, contact and task items, is tested against a fake SOAP server and has not yet run against real Exchange. See [Supported content](#supported-content).
 
 ## 1. Get the executable
 
@@ -64,7 +64,7 @@ david:
   archiveRoot: \\192.168.0.10\David\Archive
 ```
 
-Fax images: for **unpacked** David archives, `FaxItem.Image` is a real TIFF path. The tool remaps its `...\archive\...` suffix to `david.archiveRoot` and embeds the TIFF as `image/tiff`. `archiveRoot` may be either `\\server\david` or `\\server\david\archive`; both are tried. For **packed** archives, `FaxItem.Image` is only an internal container path; the file does not exist, so the fax is marked `failed` with that path instead of creating a text-only EML, even if David lists other attachments. Packed faxes require a server-side David API export/unpack. David keeps a fax's date and read state only in its `Fields` collection; the tool reads them from there, so a fax keeps its original date.
+Fax images: for **unpacked** David archives, `FaxItem.Image` is a real TIFF path. The tool remaps its `...\archive\...` suffix to `david.archiveRoot` and converts the TIFF to a multi-page PDF; the TIFF itself is attached only if that conversion fails. `archiveRoot` may be either `\\server\david` or `\\server\david\archive`; both are tried. For **packed** archives, `FaxItem.Image` is only an internal container path; the file does not exist, so the fax is marked `failed` with that path instead of creating a text-only EML, even if David lists other attachments. Packed faxes and voice messages need `unpack` plus the David cleanup first, see below. David keeps a fax's date and read state only in its `Fields` collection; the tool reads them from there, so a fax keeps its original date.
 
 ## 3. Quick start (EXE)
 
@@ -149,42 +149,44 @@ Unsupported items are **not silently dropped**: they are written to the manifest
 
 Synthetic fallback EMLs contain **only the original body and attachments**. No “Migriert aus David” or similar text is appended, so the message content remains revision-safe. If David provides HTML, the fallback is `multipart/alternative` with both `text/plain` and `text/html`; formatting is not reduced to plain text. Provenance is kept in manifest/report metadata, not in the message body.
 
-### Faxe: Archive vorher entpacken
+### Faxes and voice messages: unpack the archives first
 
-Gepackte David-Archive liefern für Faxe nur einen internen Containerpfad, keine lesbare TIFF-Datei. Vor der Faxmigration:
+Packed David archives only return an internal container path for faxes and voice messages, not a readable file. On the measured server all 239 checked fax and voice files were packed. Before migrating them:
 
 ```powershell
-# 1. Nur anzeigen
+# 1. Only show what would change
 .\david2exchange.exe unpack --config migration.yaml --dry-run
 
-# 2. BundleFiles=0 für COMMON und alle USER-Archive setzen
+# 2. Set BundleFiles=0 for COMMON and all USER archives
 .\david2exchange.exe unpack --config migration.yaml
 ```
 
-3. **David-Datenbereinigung/Archiv-Optimierung durch den David-Administrator starten.**
-4. Erst danach migrieren:
+3. **Have the David administrator run the data cleanup/archive optimisation.**
+4. Only then migrate:
 
 ```powershell
 .\david2exchange.exe run --config migration.yaml --wave wave-1 --all --output ews
 ```
 
-`unpack` setzt nur `archive.Options.BundleFiles = 0` und speichert das Archiv. Die tatsächliche Entpackung passiert erst durch die David-Bereinigung. Details: [docs/UNPACK.md](docs/UNPACK.md).
+`unpack` only sets `archive.Options.BundleFiles = 0` and saves the archive. The files are unpacked by the David cleanup. Details: [docs/UNPACK.md](docs/UNPACK.md).
 
 ### Folder mapping
 
 | David archive root | Exchange folder |
 |---|---|
-| `in` / Eingang | Inbox |
-| `out` / Ausgang | Sent Items |
-| `draft` / Entwürfe | Drafts |
-| `trash` / Gelöscht | Deleted Items |
-| `spam` / Junk | Junk Email |
-| `cal` / Kalender | Calendar (EWS Appointment) |
-| `address` / Adressen | Contacts (EWS Contact) |
-| `todo` / Aufgaben | Tasks |
-| unknown / Unverteilt | Inbox with the source folder name as subfolder |
+| `in` | Inbox |
+| `out` | Sent Items |
+| `system\drafts` | Drafts |
+| `system\trash` | Deleted Items |
+| `system\spam` | Junk Email |
+| `cal` | Calendar |
+| `address` | Contacts |
+| `todo` | Tasks |
+| any other top-level folder | Inbox with the folder name as subfolder |
 
-Subfolders below these roots are created with the same hierarchy. Root-level David items go to Inbox. The Exchange roots are resolved via **`WellKnownFolderName`** (Inbox, SentItems, Drafts, DeletedItems, JunkEmail, Calendar, Contacts, Tasks), so localized folder display names in the target mailbox do not matter. The mapping uses the numeric `DvArchiveTypes` value and additionally derives the root from the actual `ArchivePath` (`...\Eingang`, `...\Ausgang`), so stale/empty `FolderPath` values cannot move Inbox mail into Sent Items.
+Subfolders below these roots are created with the same hierarchy. Root-level David items go to Inbox. The Exchange roots are resolved via **`WellKnownFolderName`** (Inbox, SentItems, Drafts, DeletedItems, JunkEmail, Calendar, Contacts, Tasks), so localized folder display names in the target mailbox do not matter. Only the technical key of the archive selects the root. Display names such as `Eingang` or `Ausgang` are deliberately ignored, so a custom folder named "Ausgang" lands below Inbox and never in Sent Items.
+
+The item type decides as well. Calendar, contact and task items always go to their own Exchange folder; those from trash, spam or drafts go to `David-Papierkorb`, `David-Spam` or `David-Entwürfe` below it, so they do not appear as live items. A mail filed in a calendar, address or task archive goes below Inbox.
 
 ## 5. Delta migration for active mailboxes
 
@@ -210,7 +212,9 @@ Recommended operation:
 .\david2exchange.exe run --config migration.yaml --mailbox unverteilt --output ews
 ```
 
-Schedule via Task Scheduler under the David run user. Always run `setup --check` before a scheduled delta so an EWS outage is reported as an environment problem, not as item failures.
+Schedule via Task Scheduler under the David run user. An EWS policy block or rejected credentials stop the run instead of marking items as failed; run `setup --check` by hand then. It needs two interactive logins, so it cannot be scheduled.
+
+Only one process can use a manifest. A second `run`, `report` or `verify` during a run stops with a clear message and exit 2, so schedule the Unverteilt run outside the wave run or give it its own config. If the David logon fails directly after a previous run, start again.
 
 ### Performance and transfer pipeline
 
@@ -235,7 +239,7 @@ walk → export EML → build batch  ──►  bounded queue  ──►  Create
 - **Staging:** the file name derives from the full item key, because David IDs are only unique per archive. EMLs are written to a temporary name first and deleted after a confirmed import. Failed items keep their file for the next attempt.
 - **Skipped archives:** archives linked into a user's tree from elsewhere (for example `resource\hol`) are not migrated into that mailbox; each one is logged.
 - **Unreadable sources:** a COM read error never counts as "no data". An unreadable item or archive is logged and does not stop the others, but the mailbox then counts as failed and `verify` does not pass.
-- `limits.limit` caps the items handled per mailbox and run; items already imported do not count, so repeated pilot runs make progress. Use `--all` for a full or delta run.
+- `limits.limit` caps the new items per mailbox and run. Imported items do not count, and items that already failed have their own budget of the same size, so repeated pilot runs keep advancing. Use `--all` for a full or delta run.
 
 **Exit codes of `run`:** `0` everything transferred, `1` finished but items or mailboxes failed, `2` aborted, `3` invalid configuration or arguments.
 
@@ -251,22 +255,21 @@ discovered → exported → importing → imported
 - `importing` is stored **before** a batch is sent. After a crash this marks exactly the items that may have reached the server.
 - Items with an earlier attempt are searched in the target folder by `ItemKey` before sending; first attempts cost no lookup.
 - An item counts as imported only for the output that confirmed it, and for EWS only for that target mailbox. A `--output local` test does not block the later transfer to Exchange, and a changed `target.upn` transfers the mailbox again.
-- Items are identified by their David file (`TextSource`), not by `_ID`: `_ID` is only a position in the archive and shifts after deletions or a David cleanup.
+- Items are identified by source, archive and David file (`TextSource` or `Image`), not by `_ID`: `_ID` is only a position in the archive and shifts after deletions or a David cleanup. Renaming a mailbox `id` in the config does not send anything again. Contacts have no David file and use a hash of their name and address fields.
 - Ctrl+C stops the run and lets running batches finish. A second Ctrl+C ends the process at once, for example when a David call hangs; a process kill also leaves a consistent manifest. Restart with the same `run` command.
 - `--limit` is safe: only the selected number of pending items is processed.
 - A manifest created before schema 3 is refused for `discover` and `run`, because the item key changed and early versions could share one EML file. Back up and remove the manifest, its `manifest-log.db` if present, and `eml-stage`, check the target mailboxes, and start again. Items already in Exchange are then sent again.
-- `limits.limit` caps new items per mailbox and run. Items that already failed have their own budget of the same size, so repeated pilot runs keep advancing.
 
-`verify` is a manifest-level check for one target: no open or failed items for the selected wave, every imported item went to that target, and the latest run read each mailbox completely from its current source. The target is Exchange unless `--output local` says otherwise, so a local test run never counts as a finished migration. A limited pilot run after a full run makes `verify` fail until the next `run --all`. A target-folder count comparison via EWS is the next extension.
+`verify` is a manifest-level check for one target: no open or failed items for the selected wave, every imported item went to that target, and the latest run read each mailbox completely from its current source. The target is Exchange unless `--output local` says otherwise, so a local test run never counts as a finished migration. A limited pilot run makes `verify` fail until the next `run --all`. An empty source passes after a complete read. `verify` does not count the items in Exchange, and it does not notice a later change of `include` or `excludeArchives` without a new run.
 
 ## 7. Tenant setup
 
 Two paths are documented in [docs/SETUP.md](docs/SETUP.md):
 
-- **Automatic:** `david2exchange setup` creates/updates the Entra app, certificate, `full_access_as_app` consent, and adds the app ID to `EwsAllowedAppIDs` with backup/verification.
+- **Automatic:** `david2exchange setup` creates/updates the Entra app, certificate and `full_access_as_app` consent, backs up `EwsAllowedAppIDs` and adds the app ID. **It sets `EwsEnabled=true` for the whole tenant without asking**, see the warning in SETUP.md.
 - **Manual fallback:** Entra app registration, API permission, certificate, admin consent, EWS allowlist, Application Access Policy and verification commands.
 
-`setup --check` verifies the current state; `setup --remove` removes the app, consent, certificate and allowlist entry without touching foreign app IDs or `EwsEnabled`.
+`setup --check` checks the app, `EwsEnabled` and the allowlist entry. It shows the configuration, not whether EWS works yet; the first real access test is `run --limit 1 --output ews`. `setup --remove` removes the app and allowlist entry without asking and without touching foreign app IDs or `EwsEnabled`; the certificate only goes with `--cert-thumbprint`.
 
 `mailboxes ensure` creates missing **Shared Mailboxes**, sets aliases and grants `FullAccess` to the migration admin. User mailboxes are not created automatically because they require licensing.
 
@@ -275,16 +278,16 @@ Two paths are documented in [docs/SETUP.md](docs/SETUP.md):
 | Command | Purpose |
 |---|---|
 | `setup [--check\|--remove]` | tenant app/certificate/consent/EWS allowlist |
-| `config create` | list sources/targets and auto-map by e-mail |
+| `config create [--force]` | list sources/targets and auto-map by e-mail; an existing config needs `--force` and loses its manual values |
 | `sources [--json]` | list David user/common archives incl. e-mail |
 | `targets [--json]` | list Exchange User/Shared mailboxes incl. aliases |
-| `map [--list]` | manual mapping correction |
+| `map [--list] [--source-email] [--wave]` | manual mapping correction |
 | `mailboxes ensure` | create missing Shared Mailboxes, aliases, FullAccess |
 | `discover` | metadata scan into manifest |
 | `run [--dry-run] [--wave] [--limit] [--output local\|ews]` | export/import; initial and delta |
-| `verify [--wave] [--output local\|ews]` | check for open/failed items and complete walks for one target (default `ews`) |
+| `verify [--wave] [--output local\|ews]` | check for open/failed items and complete reads for one target (default `ews`) |
 | `report [--out]` | HTML/JSON report |
-| `unpack [--dry-run]` | mark all COMMON/USER archives as unpacked (`BundleFiles=0`) |
+| `unpack [--dry-run]` | mark all COMMON/USER archives as unpacked (`BundleFiles=0`); needed for faxes and voice messages |
 | `probe` | low-level David/EWS diagnostics |
 
 All commands run from the EXE; `--config` defaults to `migration.yaml` next to the EXE.
@@ -301,5 +304,6 @@ All commands run from the EXE; `--config` defaults to `migration.yaml` next to t
 - [Configuration and mapping](docs/CONFIG.md)
 - [Tenant setup: automatic and manual](docs/SETUP.md)
 - [Release and EXE](docs/RELEASE.md)
+- [Unpacking archives](docs/UNPACK.md)
 - [Probe on the David workstation](docs/PROBE.md)
 - Background: [Specification](docs/SPECIFICATION.md) · [Implementation plan](docs/IMPLEMENTATION-PLAN.md)

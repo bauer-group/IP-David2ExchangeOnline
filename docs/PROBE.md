@@ -1,6 +1,6 @@
 # David-Probe: Schritt für Schritt
 
-Ziel dieser Stufe: **Beweisen, dass DvApi32 auf dem Migrationsrechner funktioniert** – Benutzerordner und Unverteilt, Metadaten und EML-Export. Es gibt noch keine EWS-Anbindung und keinen Versand.
+Ziel dieser Stufe: **Beweisen, dass DvApi32 auf dem Migrationsrechner funktioniert** – Benutzerordner und Unverteilt, Metadaten und EML-Export. Ohne `--output ews` bleibt alles lokal; der echte Import steht in Abschnitt 8. Die Migration selbst läuft über `run`, nicht über `probe`.
 
 ## 1. Voraussetzungen
 
@@ -33,7 +33,7 @@ dotnet run --project src\David2Exchange -- probe `
 Erwartung:
 
 - `geöffnet: user\1000C000 (Karl Bauer)`
-- Items aus `user\1000C000\Eingang` usw.
+- Items aus `user\1000C000\in` usw.
 - EML-Dateien mit `Message-ID`, `Date`, `From`, `To`.
 
 Wenn `GetArchive` „Insufficient rights“ liefert, aber der Baum geöffnet werden kann: Der Benutzer hat keine Rechte auf den direkten Pfad, oder der Pfad ist falsch. Der Adapter versucht dann `ArchiveRoot` → `GetSubArchive` und findet das Archiv über den Baum.
@@ -60,7 +60,7 @@ Alternative Filter:
 ## 5. Was prüfen?
 
 - [ ] `probe-report.json`: `Opened=true`, `ScannedItemCount > 0`, keine unerwarteten `Errors`.
-- [ ] `items.jsonl`: `ArchivePath` zeigt den echten Unterordner, z. B. `user\1000C000\Eingang`.
+- [ ] `items.jsonl`: `ArchivePath` zeigt den echten Unterordner, z. B. `user\1000C000\in`.
 - [ ] `Type=2` → `TypeLabel=mail`; `StatusTime`/`SendTime` sind gesetzt; `IsRead` plausibel.
 - [ ] `AttachmentCount` plausibel; `From`/`To` lesbar.
 - [ ] `eml/*.eml` öffnet in Outlook/Editor; `Message-ID` und `Date` stimmen.
@@ -74,6 +74,9 @@ Alternative Filter:
 - `Received` ist ein **Bool**, kein Datum. Datum kommt aus `StatusTime`/`SendTime`.
 - `Viewed` ist der Lesestatus; `Attachments.Count` die Anhangzahl.
 - `DVEmlFromMailItem` funktioniert mit der erwarteten Signatur.
+- Fehlende Eigenschaften melden `0x80020006`. `Attachments` meldet auf Fax, Voice und Link dagegen `E_FAIL`, `VCard` auf Mail, Termin und Aufgabe, `Picture` auf den meisten Kontakten.
+- `Fields.AttachCount` ist auf Termin und Aufgabe auch mit Anhängen 0; nur `Attachments.Count` zählt.
+- Geprüfte Fax- und Voice-Dateien lagen alle in gepackten Archiven, siehe [UNPACK.md](UNPACK.md).
 
 ## 7. Fehlerbilder
 
@@ -83,7 +86,7 @@ Alternative Filter:
 | `OLE_E_CANT_GETMONIKER` | David-Sitzung nicht verfügbar | InfoCenter starten/anmelden; Probe erneut |
 | `Insufficient rights to archive` | Keine Rechte oder falscher Pfad | anderen Benutzer verwenden, `user\@me` prüfen |
 | `DvApi32.dll nicht gefunden` | DLL nicht im Suchpfad | David-Client-Installation prüfen |
-| `DVEmlFromMailItem ... nicht gefunden` | Signatur/Version abweichend | `SPIKE.md` ergänzen, Exportpfad prüfen |
+| `DVEmlFromMailItem ... nicht gefunden` | Signatur/Version abweichend | David-Version und Exportpfad prüfen |
 | Typ 1 statt Mail | Adress-Teilarchiv | `--type 2` oder `--exclude-path` |
 
 ## 8. Echter EWS-Import (Mail)
@@ -112,17 +115,9 @@ dotnet run --project src\David2Exchange -- probe `
 
 Erwartung:
 
-- `EWS verbunden: test@example.com · Zielordner 'David-Probe'`
-- pro Mail eine `CreateItems`-Antwort `Success`
-- `EWS: 3 Items importiert.`
-- Im Zielordner `David-Probe` liegen die Mails als **empfangene** Mails, nicht als Entwurf.
+- `EWS verbunden: test@example.com`
+- `EWS: 3 Items importiert, 0 bereits vorhanden.`
+- Im Unterordner `David-Probe` des Eingangs (anderer Name mit `--ews-folder`) liegen die Mails als **empfangene** Mails, nicht als Entwurf.
 
 Wenn das Zertifikat fehlt: Exit 2 mit klarer Meldung. Wenn die App keine Berechtigung hat: EWS-Fehler `ErrorAccessDenied`; dann `setup`/Consent/Allowlist prüfen.
-
-## 9. Nächste Stufe
-
-1. Typ-Enum vollständig dokumentieren (Mail, Fax, SMS, Chat, Voice, Kalender, Kontakt).
-2. Fax/SMS/Voice/Chat-Exportmethoden prüfen.
-3. `_ID`-Stabilität und Eindeutigkeit je Archiv prüfen.
-4. Danach erst EWS-Adapter und Manifest anschließen.
 

@@ -1,6 +1,6 @@
-# Archive entpacken für die Faxmigration
+# Archive entpacken für Fax und Voice
 
-David packt ältere Archive. Bei gepackten Archiven liefert `FaxItem.Image` nur einen internen Containerpfad (`M[...].001`), der nicht als TIFF lesbar ist. Für die Faxmigration müssen die Archive entpackt sein.
+David packt ältere Archive. Bei gepackten Archiven liefern `FaxItem.Image` und `VoiceItem.Content` nur einen internen Containerpfad (`M[...].001`), der nicht als Datei lesbar ist. Für die Migration von Faxen und Voice-Nachrichten müssen die Archive entpackt sein. Auf dem gemessenen Server lagen alle 239 geprüften Dateien in gepackten Archiven.
 
 ## 1. Dry-Run
 
@@ -75,4 +75,4 @@ WARNUNG: Faxe werden nur migriert, wenn die David-Archive entpackt sind.
 - `unpack` benötigt David-Rechte zum Ändern der Archivoptionen.
 - Der Befehl ersetzt **nicht** die David-Bereinigung.
 - Nach der Bereinigung kann das Entpacken je nach Archivgröße lange dauern.
-- Gepackte Faxe werden nicht als Text-EML migriert; sie bleiben sichtbar `failed`.
+- Gepackte Faxe und Voice-Nachrichten werden nicht als Text-EML migriert; sie bleiben sichtbar `failed`. Der nächste Lauf nach dem Entpacken überträgt sie.

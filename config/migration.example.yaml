@@ -19,7 +19,6 @@ m365:
 staging:
   root: .\data
   manifest: .\data\manifest.db
-  logs: .\logs
 
 limits:
   limit: 0                         # 0 = alle; >0 nur für Testläufe

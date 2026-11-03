@@ -2,7 +2,7 @@
 
 Ziel: Eine Entra-App mit Zertifikat, `full_access_as_app`-Consent und einem Eintrag in der **EWS-Allowlist** des Tenants. Danach kann `david2exchange` per EWS app-only auf die Zielpostfächer zugreifen.
 
-> **Wichtig:** EWS wird in Exchange Online seit dem 01.10.2026 global deaktiviert; Ausnahmen gelten nur für App-IDs in `EwsAllowedAppIDs` und enden am 01.04.2027. Die Freigabe kann bis zu 24 Stunden brauchen. Ein Token allein beweist nicht, dass EWS für die App freigegeben ist – der Canary-Test ist ein `Folder.Bind`.
+> **Wichtig:** EWS wird in Exchange Online seit dem 01.10.2026 global deaktiviert; Ausnahmen gelten nur für App-IDs in `EwsAllowedAppIDs` und enden am 01.04.2027. Die Freigabe kann bis zu 24 Stunden brauchen. Ein Token allein beweist nicht, dass EWS für die App freigegeben ist. Das Tool hat dafür keinen eigenen Test; der erste echte Zugriff ist `run --limit 1 --output ews` und überträgt bereits ein Item.
 
 ## 1. Voraussetzungen
 
@@ -12,7 +12,7 @@ Ziel: Eine Entra-App mit Zertifikat, `full_access_as_app`-Consent und einem Eint
 | PowerShell | `pwsh` 7.4+ |
 | Module | `Microsoft.Graph.Applications`, `Microsoft.Graph.Identity.SignIns`, `ExchangeOnlineManagement` |
 | Netzwerk | HTTPS zu `login.microsoftonline.com`, `graph.microsoft.com`, `outlook.office365.com` |
-| Zertifikat | privat in `CurrentUser\My`, öffentlicher Teil `.cer` |
+| Zertifikat | privat in `CurrentUser\My`; `setup` erzeugt es selbst |
 | Ziel | Zielpostfächer existieren (User/Shared) oder werden per `mailboxes ensure` angelegt |
 
 ## 2. Automatisches Setup
@@ -23,41 +23,44 @@ cd C:\david2exchange
 .\david2exchange.exe setup --config migration.yaml --check
 ```
 
+> **Vor dem Start lesen:** `setup` fragt nicht nach. Es installiert fehlende Module und setzt `EwsEnabled=true` für den **gesamten Tenant**. Damit dürfen alle Apps der Allowlist EWS nutzen, nicht nur diese. Ist das nicht gewünscht, das manuelle Setup in Abschnitt 3 verwenden.
+
 ### Was `setup` tut
 
-1. Prüft `pwsh` und die benötigten Module; installiert fehlende Module nach Rückfrage im `CurrentUser`-Scope.
+1. Prüft `pwsh` und die benötigten Module; installiert fehlende Module ohne Rückfrage im `CurrentUser`-Scope.
 2. **Device-Code-Login** bei Microsoft Graph (`Application.ReadWrite.All`, `AppRoleAssignment.ReadWrite.All`, `Directory.Read.All`). Die EXE startet `pwsh` ohne Output-Umleitung; URL und Code werden auf der Konsole angezeigt.
-3. Erzeugt/verwendet ein selbstsigniertes Zertifikat `CN=david2exchange-migration` (RSA 2048, 12 Monate) in `CurrentUser\My`; legt den öffentlichen Teil als `.cer` neben die Config. Wenn `New-SelfSignedCertificate` nicht antwortet, bricht die Erzeugung nach 90 s ab und fällt automatisch auf `certreq` zurück.
+3. Erzeugt/verwendet ein selbstsigniertes Zertifikat `CN=david2exchange-migration` (RSA 2048, 12 Monate) in `CurrentUser\My`. Wenn `New-SelfSignedCertificate` nicht antwortet, bricht die Erzeugung nach 90 s ab und fällt automatisch auf `certreq` zurück.
 4. Legt die App `david2exchange-migration` an oder aktualisiert sie (Single Tenant, `full_access_as_app` für Office 365 Exchange Online, Zertifikat als Key Credential).
 5. Legt den Service Principal an und erteilt Admin-Consent.
-6. Exchange-Online-Login per **Device Code**; liest `EwsEnabled`/`EwsAllowedAppIDs`, sichert die **komplette** Liste nach `setup-backup-<datum>.json`, hängt die neue App-ID an (falls nicht vorhanden) und schreibt `EwsEnabled=true` **nur nach ausdrücklicher Freigabe**.
-7. Liest die Liste erneut und prüft, dass fremde App-IDs (Veeam, Microsoft) unverändert vorhanden sind.
+6. Exchange-Online-Login per **Device Code**; liest `EwsEnabled`/`EwsAllowedAppIDs`, sichert die **komplette** Liste nach `setup-backup-<datum>.json`, hängt die neue App-ID an (falls nicht vorhanden) und schreibt **ohne Rückfrage** `EwsEnabled=true` samt Liste.
+7. Liest die Liste erneut und gibt sie zurück. Sie wird nicht automatisch verglichen: **Bitte selbst prüfen**, dass fremde App-IDs (Veeam, Microsoft) noch vorhanden sind; die alte Liste steht im Backup.
 8. Optional: `New-ApplicationAccessPolicy` auf eine Sicherheitsgruppe.
 9. Schreibt `tenantId`, `clientId`, `certThumbprint` in `migration.yaml` (Backup `.bak`).
-10. Canary-Test: Token per Zertifikat + `Folder.Bind(MsgFolderRoot)` auf das erste Zielpostfach; bei Verzögerung wird wiederholt.
+
+Der Zugriff selbst wird nicht getestet. Das macht der erste Lauf, siehe den Hinweis oben.
 
 ### `--check`
 
-Prüft ohne Änderungen:
+Prüft ohne Änderungen und zeigt `ewsEnabled` und `appIdInAllowlist` an:
 
 - App vorhanden,
-- Zertifikat im Store,
 - `EwsEnabled`,
-- App-ID in der Allowlist,
-- optional Access Policy,
-- Canary-/EWS-Zugriff.
+- App-ID in der Allowlist (auch als kommagetrennter Text).
 
-Exit 0 = grün, 1 = Warnung/offen, 3 = Aufruffehler.
+Nicht geprüft werden Zertifikat, Access Policy, die Werte in `migration.yaml` und der EWS-Zugriff selbst. Der Befehl braucht zwei interaktive Device-Code-Anmeldungen und lässt sich deshalb nicht einplanen.
+
+Exit 0 = alle drei Punkte erfüllt, 1 = etwas fehlt, 3 = Aufruffehler.
 
 ### `--remove`
 
-Entfernt nach Bestätigung:
+Entfernt **ohne Rückfrage**:
 
 - App-ID aus der Allowlist (alle anderen Einträge bleiben),
 - Application Access Policy,
 - Service Principal und App-Registrierung,
-- Zertifikat aus `CurrentUser\My`,
 - `m365`-Werte aus der Config.
+
+Das Zertifikat aus `CurrentUser\My` geht nur mit, wenn `--cert-thumbprint <thumbprint>` angegeben ist; der Wert aus der Config wird dafür nicht gelesen.
 
 `EwsEnabled` wird **nicht** verändert.
 
@@ -131,7 +134,7 @@ Regeln:
 - **Nie** die Liste auf nur eine ID setzen.
 - Fremde IDs (Veeam, Microsoft) müssen erhalten bleiben.
 - Bei Abweichung: Backup zurückschreiben.
-- Änderungen können bis zu 24 Stunden brauchen; `setup --check` meldet „pending“.
+- Änderungen können bis zu 24 Stunden brauchen. `setup --check` zeigt die Konfiguration, nicht die wirksame Freigabe.
 
 ### 3.5 Application Access Policy (empfohlen)
 
@@ -167,7 +170,7 @@ m365:
 .\david2exchange.exe setup --config migration.yaml --check
 ```
 
-Erwartet: App, Zertifikat, Allowlist und Canary-Bind grün. Bei `403`/`ErrorAccessDenied`:
+Erwartet: `ewsEnabled: True`, `appIdInAllowlist: True`, Exit 0. Der Zugriff selbst zeigt sich erst beim ersten Lauf. Bei `403`/`ErrorAccessDenied`:
 
 - App-ID in der Allowlist?
 - `EwsEnabled=true`?
@@ -219,5 +222,5 @@ User-Mailboxes werden nicht automatisch erzeugt: Sie benötigen eine Lizenz und 
 - Zertifikat nur in `CurrentUser\My`; privater Schlüssel wird nicht exportiert.
 - Config enthält keine Secrets; Thumbprint/IDs sind keine Passwörter, aber intern behandeln.
 - Setup-Backup der Allowlist aufbewahren.
-- `setup --remove` nach Abschluss; `EwsEnabled` bleibt unverändert.
+- `setup --remove --cert-thumbprint <thumbprint>` nach Abschluss; `EwsEnabled` bleibt unverändert und muss bei Bedarf von Hand zurückgesetzt werden.
 - Logs enthalten keine Mail-Inhalte.
