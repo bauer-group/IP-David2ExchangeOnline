@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: MIT
 using System.Reflection;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text;
 using System.Xml.Linq;
 using David2Exchange.Output;
+using ServiceError = Microsoft.Exchange.WebServices.Data.ServiceError;
+using ServiceXmlDeserializationException = Microsoft.Exchange.WebServices.Data.ServiceXmlDeserializationException;
+using ServiceXmlSerializationException = Microsoft.Exchange.WebServices.Data.ServiceXmlSerializationException;
 
 namespace David2Exchange.Tests.Output;
 
@@ -85,6 +90,43 @@ public sealed class EwsOutputTargetTests : IDisposable
             folderPath,
             checkExisting,
             $"box|{folderPath}|{id}");
+    }
+
+    private static OutputItem NonMail(string kind, string folderPath, string? subject, Dictionary<string, string?>? properties = null)
+    {
+        return new OutputItem(
+            @"user\1\" + folderPath,
+            "1",
+            kind == "calendar" ? "7" : kind == "task" ? "12" : "1",
+            kind,
+            subject,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            properties ?? new Dictionary<string, string?>(),
+            kind,
+            folderPath,
+            false,
+            $"box|{folderPath}|1");
+    }
+
+    private static FakeReply FolderExists()
+    {
+        return new FakeReply(Body: FakeEwsServer.Envelope(
+            """
+            <m:CreateFolderResponse><m:ResponseMessages><m:CreateFolderResponseMessage ResponseClass="Error">
+            <m:MessageText>ErrorFolderExists</m:MessageText><m:ResponseCode>ErrorFolderExists</m:ResponseCode>
+            <m:DescriptiveLinkKey>0</m:DescriptiveLinkKey></m:CreateFolderResponseMessage></m:ResponseMessages></m:CreateFolderResponse>
+            """));
+    }
+
+    private static string FolderName(string folderPath)
+    {
+        return string.Join('/', EwsOutputTarget.ResolveTarget(NonMail("mail", folderPath, null)).Subfolders);
     }
 
     private static string StoredKey(OutputItem item) => "v2|" + item.ItemKey;
@@ -739,6 +781,34 @@ public sealed class EwsOutputTargetTests : IDisposable
         Assert.All(results, result => Assert.True(result.Success, result.Error));
         Assert.Equal(3, _server.Items.Select(item => item.ItemKey).Distinct().Count());
         Assert.Equal(3, _server.Items.Count);
+
+        // Die Antwort kam vollständig an: Der Server ist fertig, Warten brächte nichts.
+        Assert.DoesNotContain(TimeSpan.FromSeconds(65), _delays);
+    }
+
+    [Fact]
+    public async Task Abort_from_a_nested_call_is_not_retried()
+    {
+        await using var target = await OpenAsync();
+        var folderSearches = 0;
+        _server.Intercept = request =>
+        {
+            if (request.Operation == "CreateFolder")
+            {
+                return FolderExists();
+            }
+
+            // Die erste Suche findet den Ordner nicht; die zweite läuft im Fehlerpfad von CreateFolder.
+            return request.Operation == "FindFolder" && ++folderSearches > 1
+                ? new FakeReply(StatusCode: 403, Body: "")
+                : null;
+        };
+
+        await Assert.ThrowsAsync<OutputAbortedException>(
+            () => target.WriteBatchAsync(new[] { Mail("a", "in/Projekt") }, CancellationToken.None));
+
+        Assert.Empty(_delays);
+        Assert.Single(_server.Operations, operation => operation == "CreateFolder");
     }
 
     [Fact]
@@ -1013,5 +1083,344 @@ public sealed class EwsOutputTargetTests : IDisposable
 
         Assert.True(results[0].Success, results[0].Error);
         Assert.Single(_server.Items);
+    }
+
+    [Theory]
+    [InlineData("calendar", "cal", "BodyText")]
+    [InlineData("calendar", "cal", "BodyHtml")]
+    [InlineData("calendar", "cal", "Location")]
+    [InlineData("task", "todo", "BodyText")]
+    [InlineData("task", "todo", "BodyHtml")]
+    [InlineData("contact", "address", "DisplayName")]
+    [InlineData("contact", "address", "FirstName")]
+    [InlineData("contact", "address", "LastName")]
+    [InlineData("contact", "address", "CompanyName")]
+    [InlineData("contact", "address", "Department")]
+    [InlineData("contact", "address", "JobTitle")]
+    [InlineData("contact", "address", "FileAs")]
+    [InlineData("contact", "address", "EMail")]
+    [InlineData("contact", "address", "PhoneNumber")]
+    [InlineData("contact", "address", "FaxNumber")]
+    [InlineData("contact", "address", "SMSNumber")]
+    [InlineData("contact", "address", "BodyText")]
+    public async Task Illegal_character_in_a_text_field_arrives_without_any_retry(string kind, string folder, string field)
+    {
+        await using var target = await OpenAsync();
+        var item = NonMail(kind, folder, "ok", new Dictionary<string, string?> { [field] = "a\vb" });
+
+        var results = await target.WriteBatchAsync(new[] { item }, CancellationToken.None);
+
+        Assert.True(results[0].Success, results[0].Error);
+        Assert.Contains("a b", _server.Items.Single().Request!.ToString(), StringComparison.Ordinal);
+        Assert.Empty(_delays);
+        Assert.DoesNotContain("FindItem", _server.Operations);
+    }
+
+    [Theory]
+    [InlineData("calendar", "cal")]
+    [InlineData("task", "todo")]
+    [InlineData("contact", "address")]
+    public async Task Illegal_character_in_the_subject_arrives_without_any_retry(string kind, string folder)
+    {
+        await using var target = await OpenAsync();
+
+        var results = await target.WriteBatchAsync(new[] { NonMail(kind, folder, "a\vb") }, CancellationToken.None);
+
+        Assert.True(results[0].Success, results[0].Error);
+        Assert.Contains("a b", _server.Items.Single().Request!.ToString(), StringComparison.Ordinal);
+        Assert.Empty(_delays);
+        Assert.DoesNotContain("FindItem", _server.Operations);
+    }
+
+    [Fact]
+    public async Task Body_keeps_words_apart_and_everything_that_is_valid()
+    {
+        await using var target = await OpenAsync();
+        var item = NonMail("calendar", "cal", "ok", new Dictionary<string, string?>
+        {
+            ["BodyText"] = "Zeile eins\vZeile zwei\fä€\tX 😀"
+        });
+
+        var results = await target.WriteBatchAsync(new[] { item }, CancellationToken.None);
+
+        Assert.True(results[0].Success, results[0].Error);
+        var body = _server.Items.Single().Request!.Element(FakeEwsServer.T + "Body")!.Value;
+        Assert.Equal("Zeile eins Zeile zwei ä€\tX 😀", body);
+    }
+
+    [Fact]
+    public void XmlSafe_replaces_only_what_xml_forbids()
+    {
+        Assert.Null(EwsOutputTarget.XmlSafe(null));
+        Assert.Equal("ok", EwsOutputTarget.XmlSafe("ok"));
+        Assert.Equal("\t\r\n\u0085", EwsOutputTarget.XmlSafe("\t\r\n\u0085"));
+        Assert.Equal("😀", EwsOutputTarget.XmlSafe("😀"));
+        Assert.Equal("a b", EwsOutputTarget.XmlSafe("a\0b"));
+        Assert.Equal("a b", EwsOutputTarget.XmlSafe("a￾b"));
+        Assert.Equal("a b", EwsOutputTarget.XmlSafe("a￿b"));
+
+        // Ein einzelnes oder vertauschtes Surrogat ist kein Zeichen.
+        Assert.Equal("a b", EwsOutputTarget.XmlSafe("a" + (char)0xD83D + "b"));
+        Assert.Equal("a ", EwsOutputTarget.XmlSafe("a" + (char)0xD83D));
+        Assert.Equal("  ", EwsOutputTarget.XmlSafe(new string(new[] { (char)0xDE00, (char)0xD83D })));
+    }
+
+    [Fact]
+    public void Failure_to_serialize_is_permanent_but_a_garbled_response_stays_unknown()
+    {
+        Assert.Equal(EwsFailureKind.Permanent, EwsFailure.Classify(new ServiceXmlSerializationException("x")));
+        Assert.Equal(EwsFailureKind.Ambiguous, EwsFailure.Classify(new ServiceXmlDeserializationException("x")));
+    }
+
+    [Fact]
+    public async Task Illegal_character_in_the_key_fails_once_without_showing_the_value()
+    {
+        // Die Kennung darf sich nicht ändern, sie geht also nicht durch XmlSafe.
+        await using var target = await OpenAsync();
+        var item = NonMail("calendar", "cal", "ok") with { ItemKey = "box|cal\v|geheim" };
+
+        var results = await target.WriteBatchAsync(new[] { item }, CancellationToken.None);
+
+        Assert.False(results[0].Success);
+        Assert.False(results[0].Retryable);
+        Assert.Empty(_delays);
+        Assert.DoesNotContain("geheim", results[0].Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Folder_names_are_valid_xml_and_keep_their_earlier_spelling()
+    {
+        Assert.Equal("Pro jekt", FolderName("in/Pro￿jekt"));
+        Assert.Equal("Pro jekt", FolderName("in/Pro" + (char)0xD83D + "jekt"));
+        Assert.Equal("😀 Projekt", FolderName("in/😀 Projekt"));
+
+        // Ein anderer Ersatz legte beim nächsten Lauf einen zweiten Ordner an.
+        Assert.Equal("Pro_jekt", FolderName("in/Pro\vjekt"));
+
+        // Die Kürzung auf 200 Zeichen darf kein Surrogatpaar trennen.
+        Assert.Equal(new string('a', 199), FolderName("in/" + new string('a', 199) + "😀"));
+        Assert.Equal(new string('b', 200), FolderName("in/" + new string('b', 250)));
+    }
+
+    [Fact]
+    public async Task Folder_with_an_illegal_character_is_created_without_any_retry()
+    {
+        await using var target = await OpenAsync();
+        var item = Mail("a", "in/Pro￿jekt") with { ItemKey = "box|in|a" };
+
+        var results = await target.WriteBatchAsync(new[] { item }, CancellationToken.None);
+
+        Assert.True(results[0].Success, results[0].Error);
+        Assert.Equal("root-inbox/Pro jekt", _server.Items.Single().FolderId);
+        Assert.Empty(_delays);
+    }
+
+    [Fact]
+    public async Task Locked_staged_file_fails_only_its_own_item()
+    {
+        await using var target = await OpenAsync();
+        var items = Enumerable.Range(0, 5).Select(i => Mail($"m{i}")).ToList();
+
+        IReadOnlyList<OutputResult> results;
+        using (new FileStream(items[2].StagedEmlPath!, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            results = await target.WriteBatchAsync(items, CancellationToken.None);
+        }
+
+        Assert.Equal(5, results.Count);
+        var failed = Assert.Single(results, result => !result.Success);
+        Assert.Equal(items[2], failed.Item);
+        Assert.True(failed.Retryable);
+        Assert.Contains("EML-Datei nicht lesbar", failed.Error, StringComparison.Ordinal);
+        Assert.Equal(4, _server.Items.Count);
+    }
+
+    [Fact]
+    public async Task Staged_file_without_read_permission_fails_only_its_own_item()
+    {
+        await using var target = await OpenAsync();
+        var items = Enumerable.Range(0, 2).Select(i => Mail($"m{i}")).ToList();
+        var denied = new FileInfo(items[0].StagedEmlPath!);
+        var security = denied.GetAccessControl();
+        security.AddAccessRule(new FileSystemAccessRule(
+            WindowsIdentity.GetCurrent().User!,
+            FileSystemRights.ReadData,
+            AccessControlType.Deny));
+        denied.SetAccessControl(security);
+
+        var results = await target.WriteBatchAsync(items, CancellationToken.None);
+
+        var failed = Assert.Single(results, result => !result.Success);
+        Assert.Equal(items[0], failed.Item);
+        Assert.True(failed.Retryable);
+        Assert.Single(_server.Items);
+    }
+
+    [Fact]
+    public async Task File_locked_on_a_later_attempt_keeps_what_was_already_verified()
+    {
+        await using var target = await OpenAsync();
+        var items = Enumerable.Range(0, 5).Select(i => Mail($"m{i}")).ToList();
+        FileStream? locked = null;
+        var isFirst = true;
+        _server.Intercept = request =>
+        {
+            if (request.Operation != "CreateItem" || !isFirst)
+            {
+                return null;
+            }
+
+            // Vier werden gespeichert, das fünfte gedrosselt; danach ist seine Datei gesperrt.
+            isFirst = false;
+            locked = new FileStream(items[4].StagedEmlPath!, FileMode.Open, FileAccess.Read, FileShare.None);
+            var saved = new StringBuilder();
+            foreach (var item in items.Take(4))
+            {
+                _server.Seed(InboxId, StoredKey(item));
+                saved.Append(
+                    $"""
+                    <m:CreateItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode>
+                    <m:Items><t:Message><t:ItemId Id="{_server.Items[^1].Id}" ChangeKey="ck" /></t:Message></m:Items></m:CreateItemResponseMessage>
+                    """);
+            }
+
+            return new FakeReply(Body: FakeEwsServer.Envelope(
+                $"""
+                <m:CreateItemResponse><m:ResponseMessages>{saved}{FakeEwsServer.ItemError("ErrorServerBusy")}</m:ResponseMessages></m:CreateItemResponse>
+                """));
+        };
+
+        IReadOnlyList<OutputResult> results;
+        try
+        {
+            results = await target.WriteBatchAsync(items, CancellationToken.None);
+        }
+        finally
+        {
+            locked?.Dispose();
+        }
+
+        Assert.Equal(4, results.Count(result => result.Success));
+        var failed = Assert.Single(results, result => !result.Success);
+        Assert.Equal(items[4], failed.Item);
+        Assert.True(failed.Retryable);
+    }
+
+    [Theory]
+    [InlineData("ErrorNoApplicableProxyCASServersAvailable")]
+    [InlineData("ErrorProxyServiceDiscoveryFailed")]
+    public async Task Routing_fault_is_retried_after_a_lookup_and_every_item_arrives(string code)
+    {
+        await using var target = await OpenAsync();
+        var faults = 0;
+        _server.Intercept = request => request.Operation == "CreateItem" && ++faults <= 2
+            ? FakeEwsServer.Fault(code)
+            : null;
+        var items = Enumerable.Range(0, 20).Select(i => Mail($"m{i}")).ToList();
+
+        var results = await target.WriteBatchAsync(items, CancellationToken.None);
+
+        Assert.All(results, result => Assert.True(result.Success, result.Error));
+        Assert.Equal(20, _server.Items.Count);
+        Assert.Contains("FindItem", _server.Operations);
+    }
+
+    [Theory]
+    [InlineData(ServiceError.ErrorNotEnoughMemory)]
+    [InlineData(ServiceError.ErrorInvalidRequest)]
+    [InlineData(ServiceError.ErrorOrganizationAccessBlocked)]
+    public void Codes_that_name_no_outage_stay_permanent(ServiceError code)
+    {
+        // Sonst würde ein Batch nicht mehr aufgeteilt, und ein einzelnes Item hielte alle auf.
+        Assert.Equal(EwsFailureKind.Permanent, EwsFailure.Classify(code));
+    }
+
+    [Fact]
+    public async Task Dropped_connection_on_the_last_attempt_still_gives_the_server_time()
+    {
+        await using var target = await OpenAsync();
+        _server.Intercept = request => request.Operation == "CreateItem"
+            ? new FakeReply(DropConnection: true)
+            : null;
+
+        var results = await target.WriteBatchAsync(new[] { Mail("a") }, CancellationToken.None);
+
+        Assert.True(results[0].Retryable);
+        Assert.Equal(8, _server.Operations.Count(operation => operation == "CreateItem"));
+        Assert.Equal(8, _delays.Count(delay => delay == TimeSpan.FromSeconds(65)));
+    }
+
+    [Fact]
+    public async Task Item_hint_from_the_last_verification_read_holds_the_next_batch_back()
+    {
+        await using var target = await OpenAsync();
+        var reads = 0;
+        _server.Intercept = request => request.Operation == "GetItem"
+            ? new FakeReply(Body: FakeEwsServer.Envelope(
+                FakeEwsServer.GetItemErrors(1, "ErrorServerBusy", ++reads == 8 ? 300_000 : null)))
+            : null;
+
+        var results = await target.WriteBatchAsync(new[] { Mail("a") }, CancellationToken.None);
+
+        Assert.True(results[0].Retryable);
+        Assert.Equal(8, reads);
+        await AssertNextBatchIsHeldBackAsync(target);
+    }
+
+    [Fact]
+    public async Task Fault_hint_from_the_last_verification_read_holds_the_next_batch_back()
+    {
+        await using var target = await OpenAsync();
+        var reads = 0;
+        _server.Intercept = request => request.Operation == "GetItem"
+            ? ++reads == 8 ? FakeEwsServer.ServerBusyFault(300_000) : FakeEwsServer.Fault("ErrorServerBusy")
+            : null;
+
+        var results = await target.WriteBatchAsync(new[] { Mail("a") }, CancellationToken.None);
+
+        Assert.True(results[0].Retryable);
+        Assert.Equal(8, reads);
+        await AssertNextBatchIsHeldBackAsync(target);
+    }
+
+    [Fact]
+    public async Task Hint_from_the_last_folder_lookup_holds_the_next_batch_back()
+    {
+        await using var target = await OpenAsync();
+        var lookups = 0;
+        _server.Intercept = request => request.Operation == "FindFolder"
+            ? ++lookups == 8 ? FakeEwsServer.ServerBusyFault(300_000) : FakeEwsServer.Fault("ErrorServerBusy")
+            : null;
+
+        var results = await target.WriteBatchAsync(new[] { Mail("a", "in/Projekt") }, CancellationToken.None);
+
+        Assert.Contains("Zielordner", results[0].Error, StringComparison.Ordinal);
+        Assert.Equal(8, lookups);
+        await AssertNextBatchIsHeldBackAsync(target);
+    }
+
+    private async Task AssertNextBatchIsHeldBackAsync(EwsOutputTarget target)
+    {
+        Assert.DoesNotContain(_delays, delay => delay > TimeSpan.FromMinutes(4));
+        _server.Intercept = null;
+
+        await target.WriteBatchAsync(new[] { Mail("danach") }, CancellationToken.None);
+
+        Assert.Contains(_delays, delay => delay > TimeSpan.FromMinutes(4));
+    }
+
+    [Fact]
+    public async Task Folder_reported_as_existing_but_not_found_keeps_the_original_error()
+    {
+        await using var target = await OpenAsync();
+        _server.Intercept = request => request.Operation == "CreateFolder" ? FolderExists() : null;
+
+        var results = await target.WriteBatchAsync(new[] { Mail("a", "in/Projekt") }, CancellationToken.None);
+
+        Assert.False(results[0].Success);
+        Assert.True(results[0].Retryable);
+        Assert.Contains("ErrorFolderExists", results[0].Error, StringComparison.Ordinal);
+        Assert.Single(_server.Operations, operation => operation == "CreateFolder");
+        Assert.Empty(_delays);
     }
 }

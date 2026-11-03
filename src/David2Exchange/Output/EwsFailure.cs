@@ -54,7 +54,9 @@ internal static partial class EwsFailure
 
             ServiceError.ErrorTimeoutExpired or
             ServiceError.ErrorInternalServerError or
-            ServiceError.ErrorADOperation => EwsFailureKind.Ambiguous,
+            ServiceError.ErrorADOperation or
+            ServiceError.ErrorNoApplicableProxyCASServersAvailable or
+            ServiceError.ErrorProxyServiceDiscoveryFailed => EwsFailureKind.Ambiguous,
 
             ServiceError.ErrorQuotaExceeded or
             ServiceError.ErrorAccessDenied or
@@ -83,6 +85,7 @@ internal static partial class EwsFailure
             case PropertyException:
             case ServiceValidationException:
             case ServiceVersionException:
+            case ServiceXmlSerializationException:
                 return EwsFailureKind.Permanent;
 
             // Ein unbekannter Fehler sagt nichts darüber, was der Server getan hat. Das gilt auch für
@@ -90,6 +93,15 @@ internal static partial class EwsFailure
             default:
                 return EwsFailureKind.Ambiguous;
         }
+    }
+
+    /// <summary>
+    /// Die Anfrage kann beim Server angekommen sein, ohne dass er sie zu Ende bearbeitet hat. Eine
+    /// vollständig gelesene, aber unbrauchbare Antwort gehört nicht dazu: Dann ist er bereits fertig.
+    /// </summary>
+    public static bool IsTransportFailure(Exception exception)
+    {
+        return exception is ServiceRequestException or HttpRequestException or TimeoutException or IOException or OperationCanceledException;
     }
 
     /// <summary>Anmeldung vorübergehend nicht möglich; alles andere (z. B. falsches Zertifikat) bleibt fatal.</summary>

@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading.Channels;
+using System.Xml;
 using David2Exchange.Infrastructure;
 using Microsoft.Exchange.WebServices.Data;
 using Microsoft.Identity.Client;
@@ -489,7 +490,19 @@ public sealed class EwsOutputTarget : IOutputTarget
             }
 
             // Je Versuch neu aufbauen: Eine einmal gespeicherte Instanz ist nicht mehr "new".
-            var bytes = await File.ReadAllBytesAsync(path, cancellationToken);
+            byte[] bytes;
+            try
+            {
+                bytes = await File.ReadAllBytesAsync(path, cancellationToken);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Eine gesperrte Datei darf die übrigen Items des Batches nicht aufhalten.
+                pending.Remove(entry);
+                results.Add(Failed(entry.Item, $"EML-Datei nicht lesbar: {Describe(ex)}", retryable: true));
+                continue;
+            }
+
             messages.Add(new SendEntry(entry, CreateMessage(service, entry.Item, bytes), bytes.Length));
         }
 
@@ -581,18 +594,22 @@ public sealed class EwsOutputTarget : IOutputTarget
                 {
                     results.Add(Failed(entry.Pending.Item, $"Gespeichertes Item nicht auffindbar: {response!.ErrorCode}", retryable: true));
                 }
-                else if (attempt + 1 < MaxAttempts)
-                {
-                    serverBackOff = (response is null ? null : EwsFailure.ServerBackOff(response)) ?? serverBackOff;
-                    retry.Add(entry);
-                }
                 else
                 {
-                    results.Add(Failed(entry.Pending.Item, $"Gespeichert, Prüfung noch nicht bestätigt: {response?.ErrorCode}", retryable: true));
+                    serverBackOff = (response is null ? null : EwsFailure.ServerBackOff(response)) ?? serverBackOff;
+                    if (attempt + 1 < MaxAttempts)
+                    {
+                        retry.Add(entry);
+                    }
+                    else
+                    {
+                        results.Add(Failed(entry.Pending.Item, $"Gespeichert, Prüfung noch nicht bestätigt: {response?.ErrorCode}", retryable: true));
+                    }
                 }
             }
 
-            if (retry.Count > 0)
+            // Auch ohne weiteres Lesen: Die Vorgabe des Servers gilt für den nächsten Batch.
+            if (retry.Count > 0 || serverBackOff is not null)
             {
                 await BackOffAsync(serverBackOff, attempt, cancellationToken);
             }
@@ -751,7 +768,7 @@ public sealed class EwsOutputTarget : IOutputTarget
 
         var appointment = new Appointment(service)
         {
-            Subject = item.Subject ?? "(Termin)",
+            Subject = XmlSafe(item.Subject) ?? "(Termin)",
             Body = string.IsNullOrWhiteSpace(html)
                 ? new MessageBody(BodyType.Text, GetText(item, "BodyText") ?? "")
                 : new MessageBody(BodyType.HTML, html),
@@ -768,7 +785,7 @@ public sealed class EwsOutputTarget : IOutputTarget
 
     private Contact CreateContact(ExchangeService service, OutputItem item)
     {
-        var displayName = GetText(item, "DisplayName") ?? item.Subject ?? "(Kontakt)";
+        var displayName = GetText(item, "DisplayName") ?? XmlSafe(item.Subject) ?? "(Kontakt)";
 
         var contact = new Contact(service)
         {
@@ -821,7 +838,7 @@ public sealed class EwsOutputTarget : IOutputTarget
 
         var task = new EwsTask(service)
         {
-            Subject = item.Subject ?? "(Aufgabe)",
+            Subject = XmlSafe(item.Subject) ?? "(Aufgabe)",
             Body = string.IsNullOrWhiteSpace(html)
                 ? new MessageBody(BodyType.Text, GetText(item, "BodyText") ?? "")
                 : new MessageBody(BodyType.HTML, html),
@@ -968,7 +985,13 @@ public sealed class EwsOutputTarget : IOutputTarget
                 catch (ServiceResponseException ex) when (ex.ErrorCode == ServiceError.ErrorFolderExists)
                 {
                     // Nach einem Timeout kann der erste Versuch den Ordner bereits angelegt haben.
-                    return await FindSubfolderAsync(lease, parent, name, cancellationToken) ?? throw ex;
+                    var existing = await FindSubfolderAsync(lease, parent, name, cancellationToken);
+                    if (existing is null)
+                    {
+                        throw;
+                    }
+
+                    return existing;
                 }
             },
             cancellationToken);
@@ -1021,6 +1044,11 @@ public sealed class EwsOutputTarget : IOutputTarget
             {
                 throw;
             }
+            catch (OutputAbortedException)
+            {
+                // Aus einem verschachtelten Aufruf: Die Entscheidung ist bereits gefallen.
+                throw;
+            }
             catch (Exception ex)
             {
                 if (EwsFailure.HttpStatus(ex) == EwsFailure.Unauthorized && !tokenRefreshed)
@@ -1038,6 +1066,8 @@ public sealed class EwsOutputTarget : IOutputTarget
 
                 if (kind == EwsFailureKind.Permanent || attempt + 1 >= MaxAttempts)
                 {
+                    // Ohne weiteren Versuch wartet niemand, die Vorgabe des Servers bleibt aber gültig.
+                    await BackOffAsync(ex, MaxAttempts - 1, cancellationToken);
                     throw;
                 }
 
@@ -1105,13 +1135,14 @@ public sealed class EwsOutputTarget : IOutputTarget
 
     /// <summary>
     /// Nach einem Verbindungsfehler kann der Server den Batch noch verarbeiten. Eine sofortige Suche
-    /// fände dann nichts, und das erneute Senden erzeugte Duplikate. Nur dieser Worker wartet.
+    /// fände dann nichts, und das erneute Senden erzeugte Duplikate. Nur dieser Worker wartet, auch
+    /// nach dem letzten Versuch: Die nächste Wiederholung kommt früher, als der Server fertig ist.
     /// </summary>
     private async Task WaitAfterFailureAsync(Exception failure, EwsFailureKind kind, int attempt, CancellationToken cancellationToken)
     {
         await BackOffAsync(failure, attempt, cancellationToken);
 
-        if (kind == EwsFailureKind.Ambiguous && failure is not ServiceResponseException && attempt + 1 < MaxAttempts)
+        if (kind == EwsFailureKind.Ambiguous && EwsFailure.IsTransportFailure(failure))
         {
             await _delay(ServerSettleTime, cancellationToken);
         }
@@ -1187,6 +1218,9 @@ public sealed class EwsOutputTarget : IOutputTarget
         return exception switch
         {
             ServiceResponseException response => $"{response.ErrorCode}: {response.Message}",
+
+            // Die Meldung enthielte den abgelehnten Wert im Klartext.
+            ServiceXmlSerializationException => $"{exception.GetType().Name}: Ungültiges Zeichen in einem Textfeld.",
             _ => $"{exception.GetType().Name}: {exception.Message}"
         };
     }
@@ -1213,9 +1247,41 @@ public sealed class EwsOutputTarget : IOutputTarget
 
     private static string? GetText(OutputItem item, string key)
     {
-        return item.Properties.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value)
-            ? value
+        return item.Properties.TryGetValue(key, out var value) && XmlSafe(value) is { } text && !string.IsNullOrWhiteSpace(text)
+            ? text
             : null;
+    }
+
+    /// <summary>
+    /// Der XML-Schreiber der EWS Managed API lehnt in XML 1.0 unzulässige Zeichen ab, bevor etwas
+    /// gesendet wird. MIME ist nicht betroffen (Base64). Leerzeichen statt Löschen, damit Wörter
+    /// getrennt bleiben; das Manifest behält den Originaltext.
+    /// </summary>
+    internal static string? XmlSafe(string? text)
+    {
+        if (text is null)
+        {
+            return null;
+        }
+
+        var builder = new StringBuilder(text.Length);
+        for (var i = 0; i < text.Length; i++)
+        {
+            if (XmlConvert.IsXmlChar(text[i]))
+            {
+                builder.Append(text[i]);
+            }
+            else if (i + 1 < text.Length && XmlConvert.IsXmlSurrogatePair(text[i + 1], text[i]))
+            {
+                builder.Append(text[i]).Append(text[++i]);
+            }
+            else
+            {
+                builder.Append(' ');
+            }
+        }
+
+        return builder.ToString();
     }
 
     private static int? GetInt(OutputItem item, string key)
@@ -1254,13 +1320,15 @@ public sealed class EwsOutputTarget : IOutputTarget
             builder.Append(invalid.Contains(character) || char.IsControl(character) ? '_' : character);
         }
 
-        var result = builder.ToString().Trim().TrimEnd('.');
+        // Steuerzeichen sind schon ersetzt; das hält die Namen bereits angelegter Ordner stabil.
+        var result = XmlSafe(builder.ToString())!.Trim().TrimEnd('.');
         if (string.IsNullOrWhiteSpace(result))
         {
             result = "_";
         }
 
-        return result.Length <= 200 ? result : result[..200];
+        // Der Schnitt darf kein Surrogatpaar trennen, die Hälfte wäre unzulässig.
+        return result.Length <= 200 ? result : result[..(char.IsHighSurrogate(result[199]) ? 199 : 200)];
     }
 
     private ExchangeService CreateService()

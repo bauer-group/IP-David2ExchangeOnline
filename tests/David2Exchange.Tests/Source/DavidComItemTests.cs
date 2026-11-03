@@ -235,7 +235,7 @@ public sealed class DavidComItemTests : IDisposable
     }
 
     [Fact]
-    public void Voice_content_delivered_as_bytes_is_used_directly()
+    public void Voice_content_path_is_read_from_disk()
     {
         var path = Path.Combine(_directory, "nachricht.wav");
         File.WriteAllBytes(path, new byte[] { 1, 2, 3 });
