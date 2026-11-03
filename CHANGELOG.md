@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [0.10.0](https://github.com/bauer-group/IP-David2Exchange/compare/v0.9.13...v0.10.0) (2026-11-03)
+
+### 🚀 Features
+
+* **migration:** rebuilt transfer as a verified parallel queue ([5941f03](https://github.com/bauer-group/IP-David2Exchange/commit/5941f03ac5f5977bcf7f89aa3d387803fe6a78d0))
+
 ## [0.9.13](https://github.com/bauer-group/IP-David2Exchange/compare/v0.9.12...v0.9.13) (2026-11-02)
 
 ### 🐛 Bug Fixes
