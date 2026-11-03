@@ -15,7 +15,7 @@ internal sealed class FakeEwsServer : IDisposable
     public static readonly XNamespace T = "http://schemas.microsoft.com/exchange/services/2006/types";
     private const string ItemKeyPropertySet = "7f9c1a52-3b6e-4f0a-9d2c-5e8b1a4c7d90";
 
-    private readonly HttpListener _listener = new();
+    private readonly HttpListener _listener;
     private readonly object _gate = new();
     private readonly List<StoredItem> _items = new();
     private readonly Dictionary<string, string> _folderNames = new();
@@ -27,10 +27,25 @@ internal sealed class FakeEwsServer : IDisposable
 
     public FakeEwsServer()
     {
-        var port = Random.Shared.Next(20_000, 50_000);
-        Url = $"http://localhost:{port}/EWS/Exchange.asmx";
-        _listener.Prefixes.Add($"http://localhost:{port}/");
-        _listener.Start();
+        for (var attempt = 1; ; attempt++)
+        {
+            var port = Random.Shared.Next(20_000, 50_000);
+            var listener = new HttpListener();
+            listener.Prefixes.Add($"http://localhost:{port}/");
+            try
+            {
+                listener.Start();
+                _listener = listener;
+                Url = $"http://localhost:{port}/EWS/Exchange.asmx";
+                break;
+            }
+            catch (HttpListenerException) when (attempt < 20)
+            {
+                // Port belegt (Windows-RPC, WinRM, ein zweiter Testlauf). Ein gescheitertes Start
+                // gibt den Listener frei, also braucht jeder Versuch einen neuen.
+            }
+        }
+
         _ = Task.Run(AcceptLoopAsync);
     }
 

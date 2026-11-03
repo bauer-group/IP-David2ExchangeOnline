@@ -963,17 +963,19 @@ public sealed class EwsOutputTargetTests : IDisposable
     [Fact]
     public async Task Hint_from_the_last_attempt_still_holds_the_next_batch_back()
     {
+        // Nur der letzte Versuch nennt eine Pause: Die Wartezeit in den Tests vergeht nicht, das
+        // Tor bliebe sonst von einem früheren Versuch gesetzt.
         await using var target = await OpenAsync();
+        var creates = 0;
         _server.Intercept = request => request.Operation == "CreateItem"
-            ? new FakeReply(Body: FakeEwsServer.Envelope(FakeEwsServer.ItemErrors(1, "ErrorServerBusy", 300_000)))
+            ? new FakeReply(Body: FakeEwsServer.Envelope(
+                FakeEwsServer.ItemErrors(1, "ErrorServerBusy", ++creates == 8 ? 300_000 : null)))
             : null;
+
         await target.WriteBatchAsync(new[] { Mail("a") }, CancellationToken.None);
-        _delays.Clear();
-        _server.Intercept = null;
 
-        await target.WriteBatchAsync(new[] { Mail("b") }, CancellationToken.None);
-
-        Assert.Contains(_delays, delay => delay > TimeSpan.FromMinutes(4));
+        Assert.Equal(8, creates);
+        await AssertNextBatchIsHeldBackAsync(target);
     }
 
     [Fact]
@@ -981,6 +983,7 @@ public sealed class EwsOutputTargetTests : IDisposable
     {
         var gate = typeof(EwsOutputTarget).GetField("_resumeAtMilliseconds", BindingFlags.NonPublic | BindingFlags.Instance)!;
         var waits = new List<TimeSpan>();
+        var sentDuringExtendedPause = false;
         EwsOutputTarget? target = null;
         target = new EwsOutputTarget(
             new EwsOutputOptions("ziel@example.com", _server.Url, "", "", "", "", "Europe/Berlin", 8),
@@ -993,6 +996,10 @@ public sealed class EwsOutputTargetTests : IDisposable
                     // Während dieser Worker wartet, verlängert ein anderer die Pause.
                     gate.SetValue(target, Environment.TickCount64 + 90_000);
                 }
+                else if (waits.Count == 2)
+                {
+                    sentDuringExtendedPause = _server.Operations.Contains("CreateItem");
+                }
 
                 return Task.CompletedTask;
             });
@@ -1004,6 +1011,7 @@ public sealed class EwsOutputTargetTests : IDisposable
 
         Assert.True(waits.Count >= 2);
         Assert.True(waits[1] > TimeSpan.FromSeconds(60));
+        Assert.False(sentDuringExtendedPause);
     }
 
     [Fact]

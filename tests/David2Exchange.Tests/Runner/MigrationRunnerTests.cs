@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+using System.Reflection;
 using System.Text;
 using David2Exchange.Cli;
 using David2Exchange.Config;
@@ -1202,5 +1203,57 @@ public sealed class MigrationRunnerTests : IDisposable
         }
 
         Assert.Equal(expectedRows, File.ReadAllLines(Path.Combine(directory, "items.jsonl")).Length);
+    }
+
+    [Fact]
+    public void Manifest_failure_in_the_retry_pass_lets_the_workers_finish_and_names_the_pass()
+    {
+        _in.Add("2", "A", "a");
+        _in.Add("2", "B", "b");
+        _in.Add("2", "C", "c");
+        var config = Config(limits =>
+        {
+            limits.Retries = 1;
+            limits.Workers = 1;
+            limits.BatchSize = 1;
+        });
+        using var manifest = new LiteDbManifest(config.Staging.Manifest);
+        var seen = new List<string>();
+        _output.Behavior = item =>
+        {
+            seen.Add(item.ItemKey);
+            if (seen.Count == 3)
+            {
+                // Ein Worker: Das zweite Dokument ist gespeichert und wird nicht mehr überschrieben.
+                var raw = manifest.Database.GetCollection("items");
+                var stored = raw.FindById(seen[1]);
+                stored["State"] = "Kaputt";
+                raw.Update(stored);
+            }
+
+            return seen.Count <= 3 ? new OutputResult(item, false, "ServerBusy") : null;
+        };
+
+        // Das Manifest gehört hier dem Test, deshalb direkt statt über RunCoreAsync.
+        var migrate = typeof(MigrationRunner).GetMethod("MigrateMailboxAsync", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var failure = Record.Exception(() => StaTaskRunner.Run(async () =>
+        {
+            await (Task)migrate.Invoke(null, new object[]
+            {
+                config,
+                manifest,
+                _david,
+                config.Mailboxes[0],
+                (Func<MailboxMapping, IOutputTarget>)(_ => _output),
+                0,
+                TimeSpan.Zero,
+                CancellationToken.None
+            })!;
+            return 0;
+        }));
+
+        Assert.NotNull(failure);
+        Assert.Contains("Wiederholung", failure.Message, StringComparison.Ordinal);
+        Assert.Equal(ItemState.Imported, manifest.Get(seen[0])!.State);
     }
 }
