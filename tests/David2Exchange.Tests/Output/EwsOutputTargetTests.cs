@@ -1242,6 +1242,47 @@ public sealed class EwsOutputTargetTests : IDisposable
         Assert.DoesNotContain("geheim", results[0].Error, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Illegal_character_in_a_mail_key_fails_only_that_mail_and_only_once(bool checkExisting)
+    {
+        // Ohne früheren Versuch scheitert das Senden, sonst schon die Suche über alle Kennungen.
+        await using var target = await OpenAsync();
+        var items = Enumerable.Range(0, 4).Select(i => Mail($"m{i}", checkExisting: checkExisting)).ToList();
+        var illegal = items[1] with { ItemKey = "box|in\v|geheim" };
+        items[1] = illegal;
+        if (checkExisting)
+        {
+            _server.Seed(InboxId, StoredKey(items[0]));
+        }
+
+        var results = await target.WriteBatchAsync(items, CancellationToken.None);
+
+        Assert.Equal(4, results.Count);
+        var failed = Assert.Single(results, result => !result.Success);
+        Assert.Equal(illegal, failed.Item);
+        Assert.False(failed.Retryable);
+        Assert.Contains("Item-Kennung", failed.Error, StringComparison.Ordinal);
+        Assert.DoesNotContain("geheim", failed.Error, StringComparison.Ordinal);
+        Assert.Equal(3, _server.Items.Count);
+        Assert.Empty(_delays);
+    }
+
+    [Fact]
+    public async Task Single_mail_whose_key_cannot_be_searched_fails_once_without_sending()
+    {
+        await using var target = await OpenAsync();
+        var item = Mail("a", checkExisting: true) with { ItemKey = "box|in\v|geheim" };
+
+        var results = await target.WriteBatchAsync(new[] { item }, CancellationToken.None);
+
+        Assert.False(results[0].Success);
+        Assert.False(results[0].Retryable);
+        Assert.DoesNotContain("CreateItem", _server.Operations);
+        Assert.Empty(_delays);
+    }
+
     [Fact]
     public void Folder_names_are_valid_xml_and_keep_their_earlier_spelling()
     {

@@ -270,4 +270,22 @@ public sealed class EndToEndTests : IDisposable
         Assert.Equal("root-sentitems", fax.FolderId);
         Assert.Equal("anna@example.com", ((MailboxAddress)fax.Message.From[0]).Address);
     }
+
+    [Fact]
+    public void Illegal_character_in_a_mail_key_is_not_retried_and_blocks_nothing()
+    {
+        var inbox = _david.AddRoot(@"user\anna").Sub("in", "Eingang");
+        inbox.AddMails("IN", 3);
+        inbox.Add("2", "X", "x", item => item.Set("TextSource", "\\\\srv\\david\\ITEM\v.001"));
+        var config = Config("anna");
+        config.Limits.Retries = 3;
+
+        Assert.Equal(1, Run(config));
+
+        using var manifest = new LiteDbManifest(config.Staging.Manifest);
+        var failed = Assert.Single(manifest.GetByState(ItemState.Failed));
+        Assert.Equal(1, failed.Attempts);
+        Assert.Contains("Item-Kennung", failed.LastError, StringComparison.Ordinal);
+        Assert.Equal(3, manifest.GetSummary().Imported);
+    }
 }

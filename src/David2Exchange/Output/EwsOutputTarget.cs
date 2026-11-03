@@ -229,6 +229,20 @@ public sealed class EwsOutputTarget : IOutputTarget
             {
                 await ResolveMaybeExistingAsync(lease, folder, pending, results, cancellationToken);
             }
+            catch (ServiceXmlSerializationException ex)
+            {
+                // Eine unzulässige Kennung: Die Suche verließ den Rechner nie und scheitert immer gleich.
+                // Sie steckt im Filter aller Items, also einzeln nachsehen, damit die übrigen durchkommen.
+                if (pending.Count > 1)
+                {
+                    await IsolateAsync(lease, folder, pending, results, cancellationToken);
+                    return;
+                }
+
+                pending.ForEach(entry => results.Add(Failed(entry.Item, Describe(ex), retryable: false)));
+                pending.Clear();
+                return;
+            }
             catch (Exception ex) when (IsRetryable(ex))
             {
                 // Nachsehen war nicht möglich: Der Ausgang bleibt offen, also nicht senden.
@@ -1219,8 +1233,9 @@ public sealed class EwsOutputTarget : IOutputTarget
         {
             ServiceResponseException response => $"{response.ErrorCode}: {response.Message}",
 
-            // Die Meldung enthielte den abgelehnten Wert im Klartext.
-            ServiceXmlSerializationException => $"{exception.GetType().Name}: Ungültiges Zeichen in einem Textfeld.",
+            // Die Meldung enthielte den abgelehnten Wert im Klartext. Texte und Ordnernamen gehen durch
+            // XmlSafe, die Kennung darf sich nicht ändern: Nur sie erreicht den XML-Schreiber ungeprüft.
+            ServiceXmlSerializationException => $"{exception.GetType().Name}: Ungültiges Zeichen in der Item-Kennung.",
             _ => $"{exception.GetType().Name}: {exception.Message}"
         };
     }
