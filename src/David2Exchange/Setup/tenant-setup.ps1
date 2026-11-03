@@ -57,15 +57,18 @@ if ($CheckOnly) {
 
     Connect-ExchangeOnline -Device -ShowBanner:$false
     $config = Get-OrganizationConfig -RetrieveEwsOperationAccessPolicy
-    $allowed = @($config.EwsAllowedAppIDs)
+    # Die Allowlist kann als kommagetrennter Text ankommen.
+    $allowed = @($config.EwsAllowedAppIDs | ForEach-Object { $_ -split "," } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    $ewsEnabled = [bool]$config.EwsEnabled
+    $appIdInAllowlist = $allowed -contains $app.AppId
     Write-Result @{
-        ok = $true
+        ok = $ewsEnabled -and $appIdInAllowlist
         checkOnly = $true
         tenantId = $tenantId
         clientId = $app.AppId
         certThumbprint = $CertificateThumbprint
-        ewsEnabled = [bool]$config.EwsEnabled
-        appIdInAllowlist = ($allowed -contains $app.AppId)
+        ewsEnabled = $ewsEnabled
+        appIdInAllowlist = $appIdInAllowlist
         allowlistCount = $allowed.Count
     }
     exit 0

@@ -368,7 +368,8 @@ public sealed class ProbeRunner
                 stagedEmlPath,
                 sample.Properties,
                 sample.Kind,
-                sample.FolderPath),
+                // Sonst landeten Probe-Mails als empfangene Mail direkt im Eingang des Zielpostfachs.
+                OutputTargetFactory.CanonicalKind(options.OutputKind) == "ews" ? $"in/{options.EwsFolder}" : sample.FolderPath),
             cancellationToken);
     }
 

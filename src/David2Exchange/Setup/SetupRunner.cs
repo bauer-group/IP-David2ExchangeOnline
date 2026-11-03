@@ -103,6 +103,14 @@ public sealed class SetupRunner
 
         if (options.CheckOnly)
         {
+            foreach (var name in new[] { "ewsEnabled", "appIdInAllowlist" })
+            {
+                if (root.TryGetProperty(name, out var value))
+                {
+                    Console.WriteLine($"{name}: {value}");
+                }
+            }
+
             return root.TryGetProperty("ok", out var ok) && ok.GetBoolean() ? 0 : 1;
         }
 
