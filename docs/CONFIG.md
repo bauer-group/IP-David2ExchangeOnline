@@ -87,7 +87,10 @@ staging:
 
 limits:
   limit: 0                             # 0 = alle; >0 nur für Testläufe; --all überschreibt
-  retries: 3
+  retries: 3                           # weitere Durchläufe für vorübergehend fehlgeschlagene Items
+  workers: 8                           # parallele EWS-Worker (1-16)
+  batchSize: 20                        # Nachrichten je CreateItem-Aufruf (1-100)
+  maxBatchMegabytes: 20                # EML-Größe je Batch; ein größeres Item läuft allein
 
 mailboxes:
   - id: kbauer                         # eindeutig, technischer Schlüssel
@@ -105,7 +108,7 @@ mailboxes:
       aliases: []                      # zusätzliche SMTP-Adressen
       createIfMissing: false           # Shared Mailbox bei Bedarf anlegen
     include: [mail, fax, sms, voice, chat, calendar, contacts, tasks]  # alle unterstützten Typen
-    excludeArchives: []                # Teilbäume, z. B. ["ADDRESS"]
+    excludeArchives: []                # Teilbäume: ganzes Pfadsegment oder Anzeigename, z. B. ["ADDRESS"]
 
   - id: unverteilt
     source:
@@ -130,14 +133,19 @@ mailboxes:
 - **`source.email`:** Pflicht für aktive Benutzerpostfächer; nur diese Adresse wird für das Mapping verwendet.
 - **`target.aliases`:** zusätzliche SMTP-Adressen, die beim Anlegen/Ergänzen gesetzt werden.
 - **`target.createIfMissing`:** nur für Shared Mailboxes automatisch; User-Mailboxes werden nicht automatisch lizenziert.
-- **Zielordner:** Exchange-Spezialordner werden über `WellKnownFolderName` gebunden, nicht über lokalisierte Anzeigenamen. Die David-Quelle wird über den numerischen `DvArchiveTypes`-Wert und zusätzlich über den tatsächlichen `ArchivePath` (`...\Eingang`, `...\Ausgang`) klassifiziert.
+- **Zielordner:** Exchange-Spezialordner werden über `WellKnownFolderName` gebunden, nicht über lokalisierte Anzeigenamen. Die David-Quelle wird über den technischen Ordnerschlüssel klassifiziert (`in`, `out`, `cal`, `address`, `todo`, unter `system` zusätzlich `trash`, `spam`, `drafts`). Eigene Ordner der obersten Ebene kommen unter den Eingang; ein eigener Ordner namens „Ausgang“ wird dadurch nie zu Gesendete Elemente. Termine, Kontakte und Aufgaben aus Papierkorb, Spam und Entwürfen landen nicht in den Live-Ordnern, sondern im eigenen Stamm unter `David-Papierkorb`, `David-Spam` bzw. `David-Entwürfe`.
+- **Verknüpfte Archive:** Archive, die David aus anderen Bereichen in den Baum eines Benutzers einhängt (z. B. `resource\hol`, freigegebene Kalender), werden nicht in dieses Postfach migriert; jedes wird im Log genannt. Soll ein solches Archiv migriert werden, braucht es einen eigenen Mapping-Eintrag.
 - **`include`:** steuert die Typen. `mail`, `fax`, `sms`, `voice`, `chat`, `calendar`, `contacts`, `tasks` oder `all`. Fehlt der Typ, wird das Item bewusst als `skipped` geführt.
-- **EML-Verhalten:** Nur Mail (Typ 2) wird über `DVEmlFromMailItem` als originale David-EML exportiert. Fax/SMS/Chat/Voice werden nicht nativ über diese Funktion exportiert, weil sie keine `MailItem`-Objekte sind und der native Aufruf den Prozess beenden kann. Bei Mail wird bei Fehlschlag eine generische EML mit Headern, Text und Anhängen erzeugt; der Fallback hängt **keinen** Provenienztext an den Body. Liefert David HTML, wird `multipart/alternative` mit `text/plain` und `text/html` erzeugt.
-- **Voice:** wird als Mail mit der Original-WAV-Datei als Anhang migriert. Es wird **keine Transkription** erzeugt.
-- **Fax:** liest bei **entpackten** Archiven das Original-TIFF aus `FaxItem.Image`, konvertiert es in ein mehrseitiges PDF und benennt es `fax-<faxnummer>-<datum>.pdf`. Wenn David keinen Betreff liefert, wird `[FAX] <faxnummer>` bzw. `[FAX]` als Betreff verwendet. Bei **gepackten** Archiven existiert der Image-Pfad nicht; das Item bleibt `failed`, es wird keine Text-EML erzeugt. Vorher Archive mit `david2exchange unpack` entpacken und die David-Bereinigung laufen lassen; siehe [UNPACK.md](UNPACK.md).
-- **Ablauf:** Phase 1 liest David single-threaded rekursiv Ordner für Ordner, exportiert EML und schreibt den Status nach LiteDB. Phase 2 arbeitet die LiteDB als Queue ab: 10er-Batches, 8 Worker, jedes Item einzeln mit explizitem `FolderId`, 60 s Timeout. Throttling wird mit Backoff/Jitter und EWS-`BackOffMilliseconds` wiederholt. Jeder Erfolg wird per `Message-ID` im Zielordner verifiziert; fehlende Items werden einzeln nachgezogen, falsch einsortierte in den Zielordner verschoben.
-- **Speicher:** Es werden maximal 80 Queue-Items im Speicher gehalten; das Postfach wird nicht komplett geladen.
-- **Staging-Aufräumen:** Nach erfolgreichem Import werden EML und Anhänge aus `eml-stage` gelöscht. Beim Start werden Staging-Dateien bereits importierter Items ebenfalls entfernt. Fehlgeschlagene Items behalten ihre Staging-Dateien für den Retry.
+- **EML-Verhalten:** Nur Mail (Typ 2) wird über `DVEmlFromMailItem` als originale David-EML exportiert. Fax/SMS/Chat/Voice werden nicht nativ über diese Funktion exportiert, weil sie keine `MailItem`-Objekte sind und der native Aufruf den Prozess beenden kann. Bei Mail wird bei Fehlschlag eine generische EML mit Headern, Text und Anhängen erzeugt; der Fallback hängt **keinen** Provenienztext an den Body. Hat die Mail dann weder lesbaren Text noch Anhang, bleibt sie `failed`. Liefert David HTML, wird `multipart/alternative` mit `text/plain` und `text/html` erzeugt.
+- **Richtung:** Bei Fax/SMS/Voice/Chat bestimmt das David-Feld `Received` Absender und Empfänger. Eingehend: Rufnummer oder Kennung als Absender, Zielpostfach als Empfänger. Ausgehend: Zielpostfach als Absender, Rufnummer als Empfänger. Rufnummern erscheinen als Anzeigename mit einer abgeleiteten `@david.local`-Adresse. Header werden RFC-konform kodiert, das Datum trägt den Offset aus `david.timezone`.
+- **Voice:** wird als Mail mit der Originalaudiodatei als Anhang migriert (`VoiceItem.Content` oder David-Anhang), `Caller` wird Absender. Es wird **keine Transkription** erzeugt. Ohne Audiodatei bleibt das Item `failed`; es entsteht keine leere Nachricht. An einem echten Voice-Item noch nicht geprüft.
+- **SMS/Chat:** ohne lesbaren Text und ohne Anhang bleibt das Item `failed`.
+- **Fax:** liest bei **entpackten** Archiven das Original-TIFF aus `FaxItem.Image`, konvertiert es in ein mehrseitiges PDF in physisch korrekter Größe (auch bei Standardauflösung 204 x 98 dpi) und benennt es `fax-<faxnummer>-<datum>.pdf`. Datum und Lesestatus stammen aus der `Fields`-Collection, weil `FaxItem` keine eigenen Felder dafür hat. Weitere David-Anhänge bleiben zusätzlich erhalten. Wenn David keinen Betreff liefert, wird `[FAX] <faxnummer>` bzw. `[FAX]` als Betreff verwendet. Bei **gepackten** Archiven existiert der Image-Pfad nicht; das Item bleibt `failed`, auch wenn David Anhänge nennt, und es wird keine Text-EML erzeugt. Vorher Archive mit `david2exchange unpack` entpacken und die David-Bereinigung laufen lassen; siehe [UNPACK.md](UNPACK.md).
+- **Ablauf:** Ein einziger STA-Thread liest David, exportiert EML und füllt eine begrenzte Queue. Bis zu `limits.workers` Worker übertragen parallel in Batches. Jedes gespeicherte Item wird über seine `ItemId` samt Elternordner und `ItemKey` geprüft; Items werden nie verschoben. Bei unbekanntem Ausgang (Timeout, Verbindungsabbruch) wird vor dem erneuten Senden im Zielordner gesucht. Details: README, Abschnitt 5.
+- **Anhänge an Terminen, Kontakten und Aufgaben:** werden nicht übertragen. Solche Objekte bleiben sichtbar `failed`, statt ohne ihre Dateien als übertragen zu gelten.
+- **Lesefehler:** Ein COM-Fehler gilt nie als „keine Daten“. Ein nicht lesbares Item oder Archiv hält die übrigen nicht auf, das Postfach gilt danach aber als fehlgeschlagen.
+- **Speicher:** Die Queue ist begrenzt; das Postfach wird nie komplett geladen. Termine, Kontakte und Aufgaben behalten ihre Eigenschaften im Manifest, Mails nur ihre EML-Datei.
+- **Staging-Aufräumen:** Nach bestätigtem Import wird die EML gelöscht; Arbeitsdateien für Anhänge schon beim Erzeugen der EML. Ist für ein Postfach nichts mehr offen, wird sein Staging-Ordner entfernt. Fehlgeschlagene Items behalten ihre EML für den nächsten Versuch.
 - **Mehrere Quellen auf ein Ziel:** erlaubt; `id` muss eindeutig sein.
 - **Typen:** 1 = Adresse/Kontakt, 2 = Mail, 3 = Fax, 4 = SMS, 5 = Voice, 6 = Chat/TMail, 7 = Kalender, 12 = Aufgabe. Der Lokal-Export schreibt alle unterstützten Typen; EWS erzeugt Mail, Termin, Kontakt oder Aufgabe.
 

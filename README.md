@@ -64,7 +64,7 @@ david:
   archiveRoot: \\192.168.0.10\David\Archive
 ```
 
-Fax images: for **unpacked** David archives, `FaxItem.Image` is a real TIFF path. The tool remaps its `...\archive\...` suffix to `david.archiveRoot` and embeds the TIFF as `image/tiff`. `archiveRoot` may be either `\\server\david` or `\\server\david\archive`; both are tried. For **packed** archives, `FaxItem.Image` is only an internal container path; the file does not exist, so the fax is marked `failed` with that path instead of creating a text-only EML. Packed faxes require a server-side David API export/unpack.
+Fax images: for **unpacked** David archives, `FaxItem.Image` is a real TIFF path. The tool remaps its `...\archive\...` suffix to `david.archiveRoot` and embeds the TIFF as `image/tiff`. `archiveRoot` may be either `\\server\david` or `\\server\david\archive`; both are tried. For **packed** archives, `FaxItem.Image` is only an internal container path; the file does not exist, so the fax is marked `failed` with that path instead of creating a text-only EML, even if David lists other attachments. Packed faxes require a server-side David API export/unpack. David keeps a fax's date and read state only in its `Fields` collection; the tool reads them from there, so a fax keeps its original date.
 
 ## 3. Quick start (EXE)
 
@@ -130,14 +130,14 @@ Fax images: for **unpacked** David archives, `FaxItem.Image` is a real TIFF path
 
 | David content | Detection / probe | Migration | Notes |
 |---|---|---|---|
-| E-mails | yes | **yes** | David EML preferred; revision-safe HTML/plain fallback with attachments if David export fails |
+| E-mails | yes | **yes** | David EML preferred; revision-safe HTML/plain fallback with attachments if David export fails. A mail without native export and without readable text or attachment fails visibly. |
 | Fax | yes | yes | Unpacked archive: TIFF from `FaxItem.Image` converted to a multi-page PDF (`fax-<nummer>-<datum>.pdf`); fallback subject is `[FAX] <nummer>` or `[FAX]`. Packed archive: fails visibly; no text-only EML. |
 | SMS | yes | yes | Attachment-preserving EML fallback; no native `DVEmlFromMailItem` call |
 | Chat | yes | yes | Attachment-preserving EML fallback; no native `DVEmlFromMailItem` call |
-| Voice | yes | yes | EML with the original WAV attachment; **no transcription** |
-| Calendar | yes | yes | EWS Appointment with HTML body; recurring series currently as single appointment |
-| Contacts | yes | yes | EWS Contact field mapping (name, e-mail, phone, fax, mobile, notes) with HTML body |
-| Tasks | yes | yes | EWS Task with subject, HTML/plain body, start/due date, status, priority, percent complete |
+| Voice | yes | yes | EML with the original audio (`VoiceItem.Content` or attachment), caller as sender; **no transcription**. Not yet verified against a real voice item. |
+| Calendar | yes | yes | EWS Appointment with HTML body; recurring series currently as single appointment. An appointment with attachments fails visibly, because the attachments are not transferred. |
+| Contacts | yes | yes | EWS Contact field mapping (name, e-mail, phone, fax, mobile, notes) with HTML body. Attachments: as for calendar. |
+| Tasks | yes | yes | EWS Task with subject, HTML/plain body, start/due date, status, priority, percent complete. Attachments: as for calendar. |
 | Folder tree | yes | yes | Inbox/Sent/Calendar/Contacts plus source subfolders |
 | Read state | yes | yes | mail only |
 | Deletions/moves in target | – | no | deliberately not synchronized |
@@ -208,22 +208,32 @@ Recommended operation:
 
 Schedule via Task Scheduler under the David run user. Always run `setup --check` before a scheduled delta so an EWS outage is reported as an environment problem, not as item failures.
 
-### Performance
+### Performance and transfer pipeline
 
-- Phase 1 is single-threaded: David is walked recursively folder by folder, each item is exported to EML and written to LiteDB (`Exported`).
-- Phase 2 is a LiteDB queue: 10-item batches, up to **8 workers**, each item imported individually with an explicit `FolderId`.
-- The full mailbox is never loaded into memory; only 80 queue items are materialized at a time.
-- **EWS batching is disabled in safe mode:** each item is imported individually with an explicit `FolderId`.
-- Up to **8 EWS workers** import items in parallel, each with its own `ExchangeService`.
-- EWS request timeout is **60 seconds**.
-- Throttling (`ErrorServerBusy`, `ErrorTimeoutExpired`, `ErrorBatchProcessingStopped`, transient HTTP/timeouts) is retried with exponential backoff and jitter; `BackOffMilliseconds` from EWS is honored.
-- Every batch success is verified by `Message-ID` in the intended folder. Missing items are imported individually; items found in the wrong folder are moved to the intended folder. A batch failure cannot silently drop messages.
-- Dedupe lookup is skipped for newly discovered items; it is only used for resume (`Exported`/`Importing`).
-- LiteDB state is written after each completed EWS batch, not per item.
-- Staged EMLs and attachment folders are deleted immediately after a successful batch/item import.
-- On startup, staging files of already `imported` manifest items are cleaned up as well.
-- Failed items keep their staging files for retry.
-- `limits.limit` still caps the run; use `--all` for a full/delta run.
+```text
+David thread (STA, single)              Workers (default 8, no COM)
+walk → export EML → build batch  ──►  bounded queue  ──►  CreateItems → verify → manifest
+```
+
+- **David stays strictly single-threaded.** One STA thread owns every COM object. It reads the archive, exports the EML, builds batches and blocks when the queue is full. Workers only ever see manifest documents and EML files.
+- **Export and transfer run at the same time**, mailbox by mailbox. The queue is bounded, so memory and staging disk stay small regardless of mailbox size.
+- **Batches** hold up to `limits.batchSize` messages (default 20) and at most `limits.maxBatchMegabytes` of EML (default 20). A batch only ever contains items of one source archive and therefore one target folder. A larger single item is sent alone.
+- **Workers:** `limits.workers` (default 8), each with its own `ExchangeService`. Microsoft recommends no more than 10 open requests per mailbox. `workers: 1` with `batchSize: 1` gives a slow single-item mode without a separate code path.
+- **Bottleneck on slow links:** David file access dominates, not Exchange. Measured over a 60 ms VPN link: about 1.9 s per `DVEmlFromMailItem`. Run the tool in the same LAN as the David server.
+- **Verification:** every saved item is read back by its `ItemId`. Parent folder and `david2exchange.ItemKey` must match, otherwise the item counts as failed. Items are never moved.
+- **Errors** are classified per item and per request:
+  - *Transient* (`ErrorServerBusy`, `ErrorExceededConnectionCount`, HTTP 429, ...): retried. A `BackOffMilliseconds` hint pauses all workers of the mailbox.
+  - *Unknown outcome* (timeout, dropped connection, `ErrorTimeoutExpired`, HTTP 5xx including 503, unreadable response, unknown errors): the target folder is searched by `ItemKey` before anything is sent again. After a transport failure the worker first waits 65 s, because Exchange may still be processing the batch. This narrows the window for duplicates but cannot close it completely.
+  - *Permanent for one item* (`ErrorMessageSizeExceeded`, HTTP 400 and 413, ...): only that item fails. If one item makes the server reject a whole request, the batch is split up to isolate it, with a lookup before each item is sent again.
+  - *Target unusable:* `ErrorQuotaExceeded` or impersonation errors stop this mailbox; rejected credentials and EWS policy blocks (HTTP 403, `X-EWS-Policy-Reason`) stop the run.
+- **Long runs:** the OAuth token is fetched through the MSAL cache before each request and refreshed once on HTTP 401. A short outage of the token endpoint is retried; rejected credentials stop the run at once.
+- **Retries:** after the first pass, transient failures get up to `limits.retries` further passes per mailbox.
+- **Staging:** the file name derives from the full item key, because David IDs are only unique per archive. EMLs are written to a temporary name first and deleted after a confirmed import. Failed items keep their file for the next attempt.
+- **Skipped archives:** archives linked into a user's tree from elsewhere (for example `resource\hol`) are not migrated into that mailbox; each one is logged.
+- **Unreadable sources:** a COM read error never counts as "no data". An unreadable item or archive is logged and does not stop the others, but the mailbox then counts as failed and `verify` does not pass.
+- `limits.limit` caps the items handled per mailbox and run; items already imported do not count, so repeated pilot runs make progress. Use `--all` for a full or delta run.
+
+**Exit codes of `run`:** `0` everything transferred, `1` finished but items or mailboxes failed, `2` aborted, `3` invalid configuration or arguments.
 
 ## 6. Abort and resume
 
@@ -231,18 +241,18 @@ Every item has an explicit state in `data\manifest.db`:
 
 ```text
 discovered → exported → importing → imported
-                    ↘ failed → skipped (after retries)
+                    ↘ failed (retried on every run)
 ```
 
-- Each item is committed individually.
-- `exported` reuses the EML in `data\...`; it is not exported again.
-- `importing` is retried on the next run.
-- EWS checks the target folder by `InternetMessageId` before creating an item; an interrupted import therefore does not create a duplicate.
-- `failed` is retried up to `limits.retries`; after that it becomes `skipped` and is reported.
-- Ctrl+C or a process kill leaves a consistent manifest; restart with the same `run` command.
+- `importing` is stored **before** a batch is sent. After a crash this marks exactly the items that may have reached the server.
+- Items with an earlier attempt are searched in the target folder by `ItemKey` before sending; first attempts cost no lookup.
+- An item counts as imported only for the output that confirmed it, and for EWS only for that target mailbox. A `--output local` test does not block the later transfer to Exchange, and a changed `target.upn` transfers the mailbox again.
+- Items are identified by their David file (`TextSource`), not by `_ID`: `_ID` is only a position in the archive and shifts after deletions or a David cleanup.
+- Ctrl+C stops the run and lets running batches finish. A second Ctrl+C ends the process at once, for example when a David call hangs; a process kill also leaves a consistent manifest. Restart with the same `run` command.
 - `--limit` is safe: only the selected number of pending items is processed.
+- A manifest created before schema 2 is refused for `discover` and `run`, because items could share one EML file at that time and its `imported` state cannot be trusted. Back up and remove the manifest and `eml-stage`, check the target mailboxes, and start again.
 
-`verify` is a manifest-level check: no open or failed items for the selected wave. A target-folder count comparison via EWS is the next extension.
+`verify` is a manifest-level check for one target: no open or failed items for the selected wave, every imported item went to that target, and the latest run read each mailbox completely from its current source. The target is Exchange unless `--output local` says otherwise, so a local test run never counts as a finished migration. A limited pilot run after a full run makes `verify` fail until the next `run --all`. A target-folder count comparison via EWS is the next extension.
 
 ## 7. Tenant setup
 
@@ -267,7 +277,7 @@ Two paths are documented in [docs/SETUP.md](docs/SETUP.md):
 | `mailboxes ensure` | create missing Shared Mailboxes, aliases, FullAccess |
 | `discover` | metadata scan into manifest |
 | `run [--dry-run] [--wave] [--limit] [--output local\|ews]` | export/import; initial and delta |
-| `verify [--wave]` | check for open/failed items |
+| `verify [--wave] [--output local\|ews]` | check for open/failed items and complete walks for one target (default `ews`) |
 | `report [--out]` | HTML/JSON report |
 | `unpack [--dry-run]` | mark all COMMON/USER archives as unpacked (`BundleFiles=0`) |
 | `probe` | low-level David/EWS diagnostics |

@@ -23,7 +23,10 @@ staging:
 
 limits:
   limit: 0                         # 0 = alle; >0 nur für Testläufe
-  retries: 3
+  retries: 3                       # weitere Durchläufe für vorübergehend fehlgeschlagene Items
+  workers: 8                       # parallele EWS-Worker (1-16)
+  batchSize: 20                    # Nachrichten je CreateItem-Aufruf (1-100)
+  maxBatchMegabytes: 20            # EML-Größe je Batch; ein größeres Item läuft allein
 
 mailboxes:
   - id: user01
