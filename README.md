@@ -134,10 +134,10 @@ Fax images: for **unpacked** David archives, `FaxItem.Image` is a real TIFF path
 | David content | Detection / probe | Migration | Notes |
 |---|---|---|---|
 | E-mails | yes | **yes** | David EML preferred; revision-safe HTML/plain fallback with attachments if David export fails. A mail without native export and without readable text or attachment fails visibly. |
-| Fax | yes | yes | Unpacked archive: TIFF from `FaxItem.Image` converted to a multi-page PDF (`fax-<nummer>-<datum>.pdf`); fallback subject is `[FAX] <nummer>` or `[FAX]`. Packed archive: fails visibly; no text-only EML. On the measured server every checked fax and voice file was packed, so run `unpack` plus the David cleanup first. |
+| Fax | yes | yes | Unpacked archive: TIFF from `FaxItem.Image` converted to a multi-page PDF (`fax-<nummer>-<datum>.pdf`); fallback subject is `[FAX] <nummer>` or `[FAX]`. Packed archive: fails visibly; no text-only EML. An archive folder with an `ARCHIVE.PCK` is packed; its items need `unpack` plus the David cleanup first. |
 | SMS | yes | yes | Attachment-preserving EML fallback; no native `DVEmlFromMailItem` call. An outgoing SMS takes its number from `Recipients`. |
 | Chat | yes | yes | Attachment-preserving EML fallback; no native `DVEmlFromMailItem` call |
-| Voice | yes | yes | EML with the original audio (`VoiceItem.Content` or attachment), caller as sender; **no transcription**. Fields measured on real voice items; the audio format itself is unverified, because all checked files were packed. |
+| Voice | yes | yes | EML with the original audio (`VoiceItem.Content` or attachment), caller as sender; **no transcription**. Measured: the files on the server are WAV and arrive as `.wav`. Packed archive: fails visibly, as for faxes. |
 | Calendar | yes | yes | EWS Appointment with HTML body; private flag and free/busy status are kept. A recurring series arrives as a single appointment, with a note in the log (about 1 % of the measured appointments). Attendees are not transferred, so nobody gets an invitation. Attachments are transferred. |
 | Contacts | yes | yes | EWS Contact with name, company, two e-mail addresses, office, private and mobile phone, two fax numbers, postal address, web site, birthday and notes. Title, salutation and voice box go into the notes. Attachments are transferred. |
 | Tasks | yes | yes | EWS Task with subject, HTML/plain body, start/due date, status, priority, percent complete and completion date. Attachments are transferred. |
@@ -151,7 +151,7 @@ Synthetic fallback EMLs contain **only the original body and attachments**. No â
 
 ### Faxes and voice messages: unpack the archives first
 
-Packed David archives only return an internal container path for faxes and voice messages, not a readable file. On the measured server all 239 checked fax and voice files were packed. Before migrating them:
+Packed David archives only return an internal container path for faxes and voice messages, not a readable file. On the measured server older sub-archives are packed (they hold an `ARCHIVE.PCK`), while for example a user's main `in` archive is not. Before migrating them:
 
 ```powershell
 # 1. Only show what would change

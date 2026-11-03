@@ -76,7 +76,7 @@ Alternative Filter:
 - `DVEmlFromMailItem` funktioniert mit der erwarteten Signatur.
 - Fehlende Eigenschaften melden `0x80020006`. `Attachments` meldet auf Fax, Voice und Link dagegen `E_FAIL`, `VCard` auf Mail, Termin und Aufgabe, `Picture` auf den meisten Kontakten.
 - `Fields.AttachCount` ist auf Termin und Aufgabe auch mit Anhängen 0; nur `Attachments.Count` zählt.
-- Geprüfte Fax- und Voice-Dateien lagen alle in gepackten Archiven, siehe [UNPACK.md](UNPACK.md).
+- Fax-Dateien (`M…`) sind TIFF, Voice-Dateien (`W…`) WAV. In gepackten Archiven sind sie nicht einzeln lesbar, siehe [UNPACK.md](UNPACK.md).
 
 ## 7. Fehlerbilder
 

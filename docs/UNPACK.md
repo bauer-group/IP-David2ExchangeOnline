@@ -1,6 +1,6 @@
 # Archive entpacken für Fax und Voice
 
-David packt ältere Archive. Bei gepackten Archiven liefern `FaxItem.Image` und `VoiceItem.Content` nur einen internen Containerpfad (`M[...].001`), der nicht als Datei lesbar ist. Für die Migration von Faxen und Voice-Nachrichten müssen die Archive entpackt sein. Auf dem gemessenen Server lagen alle 239 geprüften Dateien in gepackten Archiven.
+David packt ältere Archive. Bei gepackten Archiven liefern `FaxItem.Image` und `VoiceItem.Content` nur einen internen Containerpfad (`M[...].001`), der nicht als Datei lesbar ist. Für die Migration von Faxen und Voice-Nachrichten müssen die Archive entpackt sein. Ein gepacktes Archiv erkennt man an der Datei `ARCHIVE.PCK` im Archivordner. Auf dem gemessenen Server betrifft das ältere Teilarchive; das Haupt-`in` eines Benutzers ist zum Beispiel nicht gepackt.
 
 ## 1. Dry-Run
 
