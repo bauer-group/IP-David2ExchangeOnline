@@ -28,6 +28,17 @@ internal static class DavidArchivePaths
         return string.IsNullOrWhiteSpace(name) ? null : name.Trim();
     }
 
+    /// <summary>
+    /// David hängt z. B. Feiertagskalender (resource\hol) oder fremde Kalender in den Baum eines
+    /// Benutzers. Nur Pfade mit Trennzeichen sind echte Archivpfade; ohne ID fällt David auf den
+    /// Anzeigenamen zurück, der nichts über die Lage im Baum aussagt.
+    /// </summary>
+    public static bool IsForeign(string path, string rootPath)
+    {
+        return path.Contains('\\', StringComparison.Ordinal) &&
+               !path.StartsWith(rootPath.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase);
+    }
+
     public static string LastSegment(string path)
     {
         var normalized = path.Replace('/', '\\').TrimEnd('\\');

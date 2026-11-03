@@ -14,6 +14,7 @@ public sealed class LocalFileOutputTarget : IOutputTarget
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
     };
 
+    private readonly object _writeGate = new();
     private string _outputDirectory = "";
     private string _emlDirectory = "";
     private StreamWriter? _itemsWriter;
@@ -30,7 +31,7 @@ public sealed class LocalFileOutputTarget : IOutputTarget
 
         _itemsWriter = new StreamWriter(
             Path.Combine(_outputDirectory, "items.jsonl"),
-            append: false,
+            append: context.AppendItems,
             new UTF8Encoding(encoderShouldEmitUTF8Identifier: false))
         {
             AutoFlush = true
@@ -46,7 +47,11 @@ public sealed class LocalFileOutputTarget : IOutputTarget
             throw new InvalidOperationException("OutputTarget wurde nicht geöffnet.");
         }
 
-        _itemsWriter.WriteLine(JsonSerializer.Serialize(item, JsonOptions));
+        var line = JsonSerializer.Serialize(item, JsonOptions);
+        lock (_writeGate)
+        {
+            _itemsWriter.WriteLine(line);
+        }
 
         if (!string.IsNullOrWhiteSpace(item.StagedEmlPath) && File.Exists(item.StagedEmlPath))
         {

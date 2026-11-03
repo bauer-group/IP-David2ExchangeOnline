@@ -4,7 +4,10 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Folder Name="/src/">
+  <Folder Name="/Source/">
     <Project Path="src/David2Exchange/David2Exchange.csproj" />
+  </Folder>
+  <Folder Name="/Tests/">
+    <Project Path="tests/David2Exchange.Tests/David2Exchange.Tests.csproj" />
   </Folder>
 </Solution>

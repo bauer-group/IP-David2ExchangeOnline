@@ -12,11 +12,13 @@ internal sealed class DavidComArchive : IDavidArchive
         RequestedPath = requestedPath;
         _archive = archive;
         ResolvedPath = DavidArchivePaths.GetRelativePath(archive) ?? requestedPath;
-        Name = ComHelpers.GetFirstString(archive, "DisplayName", "Name", "ArchiveName")
+
+        // Schlüssel und Name bestimmen den Zielordner; ein Lesefehler darf nicht falsch einsortieren.
+        Name = ComHelpers.GetRequiredString(archive, "DisplayName", "Name", "ArchiveName")
                ?? DavidArchivePaths.LastSegment(ResolvedPath);
         FolderKey = DavidArchivePaths.LastSegment(
-            ComHelpers.GetFirstString(archive, "ID", "ArchivePath") ?? ResolvedPath);
-        ArchiveType = (int?)ComHelpers.GetFirstLong(archive, "Type", "ArchiveType");
+            ComHelpers.GetRequiredString(archive, "ID", "ArchivePath") ?? ResolvedPath);
+        ArchiveType = (int?)ComHelpers.GetRequiredLong(archive, "Type", "ArchiveType");
         FolderKind = DavidArchiveTypes.ToFolderKind(ArchiveType);
     }
 
@@ -55,15 +57,15 @@ internal sealed class DavidComArchive : IDavidArchive
     {
         get
         {
-            if (!ComHelpers.TryGetProperty(_archive, "Archives", out var archives) &&
-                !ComHelpers.TryGetProperty(_archive, "SubArchives", out archives))
+            if (!ComHelpers.TryGetRequiredProperty(_archive, "Archives", out var archives) &&
+                !ComHelpers.TryGetRequiredProperty(_archive, "SubArchives", out archives))
             {
                 yield break;
             }
 
-            foreach (var raw in ComHelpers.Enumerate(archives))
+            foreach (var raw in ComHelpers.EnumerateRequired(archives))
             {
-                var name = ComHelpers.GetFirstString(raw, "DisplayName", "Name", "ArchiveName") ?? "sub";
+                var name = ComHelpers.GetRequiredString(raw, "DisplayName", "Name", "ArchiveName") ?? "sub";
                 var path = ResolvedPath.TrimEnd('\\') + "\\" + name;
                 yield return new DavidComArchive(path, raw);
             }
@@ -97,15 +99,24 @@ internal sealed class DavidComArchive : IDavidArchive
     {
         get
         {
-            if (!ComHelpers.TryGetProperty(_archive, "AllItems", out var allItems) &&
-                !ComHelpers.TryGetProperty(_archive, "Items", out allItems))
+            if (!ComHelpers.TryGetRequiredProperty(_archive, "AllItems", out var allItems) &&
+                !ComHelpers.TryGetRequiredProperty(_archive, "Items", out allItems))
             {
                 yield break;
             }
 
-            foreach (var raw in ComHelpers.Enumerate(allItems))
+            foreach (var raw in ComHelpers.EnumerateRequired(allItems))
             {
-                yield return new DavidComItem(RequestedPath, raw);
+                try
+                {
+                    yield return new DavidComItem(RequestedPath, raw);
+                }
+                finally
+                {
+                    // Sofort freigeben: Sonst sammeln sich je Item RCWs an, deren Finalizer auf
+                    // diesen STA warten müssten. Items gelten nur bis zum nächsten Schleifenschritt.
+                    ComHelpers.Release(raw);
+                }
             }
         }
     }

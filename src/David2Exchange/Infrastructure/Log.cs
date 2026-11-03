@@ -40,8 +40,11 @@ public static class Log
 
             _originalOut = Console.Out;
             _originalError = Console.Error;
-            Console.SetOut(new TeeWriter(_originalOut, _file));
-            Console.SetError(new TeeWriter(_originalError, _file));
+
+            // Beide Konsolenströme schreiben aus mehreren Threads in dieselbe Datei.
+            var sharedFile = TextWriter.Synchronized(_file);
+            Console.SetOut(new TeeWriter(_originalOut, sharedFile));
+            Console.SetError(new TeeWriter(_originalError, sharedFile));
 
             _file.WriteLine($"=== david2exchange {ToolInfo.Version} · {DateTime.Now:O} ===");
         }

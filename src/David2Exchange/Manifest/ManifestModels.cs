@@ -30,6 +30,21 @@ public sealed class ItemDocument
     public DateTime LastSeenUtc { get; set; } = DateTime.UtcNow;
     public DateTime? ExportedUtc { get; set; }
     public DateTime? ImportedUtc { get; set; }
+
+    /// <summary>Ausgabe, die den Import bestätigt hat. Ein lokaler Testlauf zählt nicht für EWS.</summary>
+    public string? ImportedTo { get; set; }
+}
+
+/// <summary>Nachweis, dass ein Postfach zuletzt vollständig gelesen wurde.</summary>
+public sealed class WalkDocument
+{
+    [BsonId]
+    public string MailboxId { get; set; } = "";
+
+    /// <summary>Die gelesene Quelle: Nach einer Umstellung gilt der Nachweis nicht mehr.</summary>
+    public string SourcePath { get; set; } = "";
+
+    public DateTime LastCompleteWalkUtc { get; set; }
 }
 
 public sealed class RunDocument

@@ -24,12 +24,14 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Setup\*.ps1" />
+    <InternalsVisibleTo Include="David2Exchange.Tests" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="LiteDB" />
     <PackageReference Include="Microsoft.Exchange.WebServices.NETStandard" />
     <PackageReference Include="Microsoft.Identity.Client" />
+    <PackageReference Include="MimeKit" />
     <PackageReference Include="PdfSharpCore" />
     <PackageReference Include="System.Drawing.Common" />
     <PackageReference Include="System.Security.Cryptography.Xml" />

@@ -126,7 +126,7 @@ public static class AppCli
             }
 
             options.Validate();
-            return new ProbeRunner().RunAsync(options).GetAwaiter().GetResult();
+            return StaTaskRunner.Run(() => new ProbeRunner().RunAsync(options));
         }
         catch (CliException ex)
         {
@@ -282,7 +282,7 @@ public static class AppCli
                 }
             }
 
-            return Runner.ConfigCreateRunner.RunAsync(options).GetAwaiter().GetResult();
+            return StaTaskRunner.Run(() => Runner.ConfigCreateRunner.RunAsync(options));
         }
         catch (CliException ex)
         {
@@ -510,7 +510,7 @@ public static class AppCli
         try
         {
             var options = ParseRunOptions(args, allowDryRun: false);
-            return new Runner.MigrationRunner().DiscoverAsync(options).GetAwaiter().GetResult();
+            return new Runner.MigrationRunner().Discover(options);
         }
         catch (CliException ex)
         {
@@ -519,7 +519,7 @@ public static class AppCli
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"FATAL: {ex.Message}");
+            Console.Error.WriteLine($"FATAL: {ex}");
             return 2;
         }
     }
@@ -529,8 +529,33 @@ public static class AppCli
         try
         {
             var options = ParseRunOptions(args, allowDryRun: true);
-            return StaTaskRunner.Run(() =>
-                new Runner.MigrationRunner().RunAsync(options));
+
+            using var cancellation = new CancellationTokenSource();
+            ConsoleCancelEventHandler onCancel = (_, eventArgs) =>
+            {
+                // Ein blockierter COM-Aufruf lässt sich nicht unterbrechen; deshalb beendet der
+                // zweite Tastendruck den Prozess. Das Manifest bleibt auch dann fortsetzbar.
+                var isFirstRequest = !cancellation.IsCancellationRequested;
+                eventArgs.Cancel = isFirstRequest;
+                Console.Error.WriteLine(isFirstRequest
+                    ? "Abbruch angefordert: Der Lauf stoppt, der Stand bleibt fortsetzbar. Erneut Strg+C beendet sofort."
+                    : "Beende sofort.");
+                if (isFirstRequest)
+                {
+                    cancellation.Cancel();
+                }
+            };
+
+            Console.CancelKeyPress += onCancel;
+            try
+            {
+                return StaTaskRunner.Run(() =>
+                    new Runner.MigrationRunner().RunAsync(options, cancellation.Token));
+            }
+            finally
+            {
+                Console.CancelKeyPress -= onCancel;
+            }
         }
         catch (CliException ex)
         {
@@ -539,7 +564,7 @@ public static class AppCli
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"FATAL: {ex.Message}");
+            Console.Error.WriteLine($"FATAL: {ex}");
             return 2;
         }
     }
@@ -746,6 +771,7 @@ public static class AppCli
               david2exchange map --config <yaml> [--list | --source <p> --target <upn> --id <id>]
               david2exchange discover --config <yaml> [--limit N|--all]
               david2exchange run --config <yaml> [--limit N|--all] [--dry-run] [--output local|ews]
+              david2exchange verify --config <yaml> [--output local|ews]
               david2exchange report --config <yaml>
               david2exchange unpack --config <yaml> [--dry-run]
               david2exchange probe [Optionen]     David-COM testen, Objekte lokal schreiben

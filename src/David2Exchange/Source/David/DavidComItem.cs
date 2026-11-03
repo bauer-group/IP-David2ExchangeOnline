@@ -14,8 +14,8 @@ internal sealed class DavidComItem : IDavidItem
         "StatusTime", "ReceivedDate", "Received", "Date", "Empfangsdatum", "Time", "Created",
         "SendTime", "SentDate", "SendDate", "Sent", "Gesendet",
         "Viewed", "Read", "IsRead", "Gelesen",
-        "Flags", "Attachments", "From", "To", "CC", "Folder", "Archive",
-        "BodyText", "TextSource",
+        "Flags", "From", "To", "CC", "Folder", "Archive",
+        "BodyText", "TextSource", "Caller",
         "StartTime", "StopTime", "DueDate", "Location", "AllDayEvent", "IsRecurring",
         "Attendees", "Recipients", "VCard",
         "Status", "Priority", "PercentComplete", "Completed", "IsComplete", "Reminder",
@@ -25,62 +25,69 @@ internal sealed class DavidComItem : IDavidItem
 
     private readonly object _item;
     private readonly string _archivePath;
+    private IReadOnlyDictionary<string, string?>? _properties;
+    private string? _type;
 
     public DavidComItem(string archivePath, object item)
     {
         _archivePath = archivePath;
         _item = item;
-        Properties = ReadProperties();
     }
 
     public string Id =>
-        ComHelpers.GetFirstString(_item, "_ID", "ID", "ItemID", "Id") ?? "";
+        ComHelpers.GetRequiredString(_item, "_ID", "ID", "ItemID", "Id") ?? "";
 
     public string Type =>
-        ComHelpers.GetFirstString(_item, "Type", "ItemType", "DvItemType") ?? "unknown";
+        _type ??= ComHelpers.GetRequiredString(_item, "Type", "ItemType", "DvItemType") ?? "unknown";
 
     public string? Subject =>
-        ComHelpers.GetFirstString(_item, "Subject", "Betreff", "Title");
+        ComHelpers.GetRequiredString(_item, "Subject", "Betreff", "Title");
 
     public long? SizeBytes =>
-        ComHelpers.GetFirstLong(_item, "Size", "SizeBytes", "ItemSize", "Bytes");
+        ComHelpers.GetRequiredLong(_item, "Size", "SizeBytes", "ItemSize", "Bytes");
 
     public DateTime? ReceivedLocal =>
-        ComHelpers.GetFirstDate(_item, "StatusTime", "ReceivedDate", "Date", "Received", "Empfangsdatum", "Time", "Created");
+        ComHelpers.GetRequiredDate(_item, "StatusTime", "ReceivedDate", "Date", "Empfangsdatum", "Time", "Created")
+        ?? FieldDate("StatusTime");
 
     public DateTime? SentLocal =>
-        ComHelpers.GetFirstDate(_item, "SendTime", "SentDate", "SendDate", "Gesendet", "Date");
+        ComHelpers.GetRequiredDate(_item, "SendTime", "SentDate", "SendDate", "Gesendet", "Date")
+        ?? FieldDate("SendTime");
 
     public bool? IsRead =>
-        ComHelpers.GetFirstBool(_item, "Viewed", "Read", "IsRead", "Gelesen");
+        ComHelpers.GetRequiredBool(_item, "Viewed", "Read", "IsRead", "Gelesen")
+        ?? (HasFieldsOnly ? ComHelpers.ToNullableBool(ReadField("Viewed")) : null);
 
-    public IReadOnlyDictionary<string, string?> Properties { get; }
+    /// <summary>
+    /// Wird erst bei Bedarf gelesen: Body und Adressen aufzulösen kostet je Item spürbar
+    /// Zeit (gemessen ~1,5 s über VPN), und Mails mit nativer EML brauchen sie nicht.
+    /// </summary>
+    public IReadOnlyDictionary<string, string?> Properties => _properties ??= ReadProperties();
+
+    public string? SourceFile =>
+        ComHelpers.GetRequiredString(_item, "TextSource");
+
+    public bool? IsReceived =>
+        ComHelpers.GetRequiredBool(_item, "Received");
+
+    public int? AttachmentCount =>
+        ComHelpers.ToNullableLong(ReadField("AttachCount")) is { } count ? (int)count : null;
 
     public string? FaxImagePath =>
-        ComHelpers.GetFirstString(_item, "Image");
+        ReadSourceValue() is string { Length: > 0 } path && !string.IsNullOrWhiteSpace(path) ? path : null;
 
     public byte[]? FaxImage
     {
         get
         {
-            if (!ComHelpers.TryGetProperty(_item, "Image", out var value) || value is null)
-            {
-                return null;
-            }
-
-            if (value is byte[] bytes)
-            {
-                return bytes;
-            }
-
-            // Bei ungepackten Archiven ist Image ein realer TIFF-Pfad.
+            // Bei ungepackten Archiven ist der Wert ein realer Dateipfad.
             // Bei gepackten Archiven existiert die Datei nicht; dann null.
-            if (value is string path && File.Exists(path))
+            return ReadSourceValue() switch
             {
-                return File.ReadAllBytes(path);
-            }
-
-            return null;
+                byte[] bytes => bytes,
+                string path when File.Exists(path) => File.ReadAllBytes(path),
+                _ => null
+            };
         }
     }
 
@@ -88,33 +95,108 @@ internal sealed class DavidComItem : IDavidItem
     {
         get
         {
-            if (!ComHelpers.TryGetProperty(_item, "Attachments", out var value) ||
-                value is null)
+            var value = ReadAttachmentCollection();
+            if (value is null)
             {
                 return Array.Empty<DavidAttachmentInfo>();
             }
 
             var result = new List<DavidAttachmentInfo>();
-            foreach (var attachment in ComHelpers.Enumerate(value))
+            var index = -1;
+            foreach (var attachment in ComHelpers.EnumerateRequired(value))
             {
-                var fileName = ComHelpers.GetFirstString(
+                index++;
+
+                // Ein Anhang ohne Namen wird benannt, nicht verworfen: Der Export läuft über die Position.
+                var fileName = ComHelpers.GetRequiredString(
                     attachment,
                     "FileName",
                     "DisplayName",
-                    "Name");
-                if (string.IsNullOrWhiteSpace(fileName))
-                {
-                    continue;
-                }
+                    "Name") ?? $"anhang-{index + 1}.bin";
 
                 result.Add(new DavidAttachmentInfo(
                     fileName,
-                    ComHelpers.GetFirstString(attachment, "FileType", "ContentType"),
-                    ComHelpers.GetFirstString(attachment, "_Path", "Path"),
-                    ComHelpers.GetFirstLong(attachment, "FileSize", "Size")));
+                    ComHelpers.GetRequiredString(attachment, "FileType", "ContentType"),
+                    ComHelpers.GetRequiredString(attachment, "_Path", "Path"),
+                    ComHelpers.GetRequiredLong(attachment, "FileSize", "Size"),
+                    index));
             }
 
             return result;
+        }
+    }
+
+    /// <summary>Fax, SMS, Voice und Chat führen Datum und Lesestatus nur in der Fields-Collection.</summary>
+    private bool HasFieldsOnly => Type is "3" or "4" or "5" or "6";
+
+    private object? ReadSourceValue()
+    {
+        // VoiceItem führt laut Typbibliothek Content statt Image.
+        var names = Type == "5" ? new[] { "Content", "Image" } : new[] { "Image" };
+        foreach (var name in names)
+        {
+            if (ComHelpers.TryGetRequiredProperty(_item, name, out var value) && value is not null)
+            {
+                return value;
+            }
+        }
+
+        return null;
+    }
+
+    private object? ReadAttachmentCollection()
+    {
+        try
+        {
+            return ComHelpers.TryGetRequiredProperty(_item, "Attachments", out var value) ? value : null;
+        }
+        catch (Exception ex) when (ex.HResult == ComHelpers.EFail && Type != "2")
+        {
+            // Fax und Link melden hier E_FAIL statt einer leeren Liste (am echten David gemessen).
+            // Führt David laut Fields doch Anhänge, darf das nicht als "keine" durchgehen.
+            return AttachmentCount is null or 0
+                ? null
+                : throw new InvalidOperationException(
+                    $"David nennt {AttachmentCount} Anhänge, die sich nicht lesen lassen.",
+                    ex);
+        }
+    }
+
+    private DateTime? FieldDate(string name)
+    {
+        // Ein nicht gesetztes Datum steht in Fields auf 1970, nicht auf dem OLE-Nullwert.
+        return HasFieldsOnly && ComHelpers.ToNullableDate(ReadField(name)) is { Year: > 1970 } date
+            ? date
+            : null;
+    }
+
+    private string? FieldText(string name)
+    {
+        return ReadField(name) as string is { Length: > 0 } text && !string.IsNullOrWhiteSpace(text) ? text : null;
+    }
+
+    private object? ReadField(string name)
+    {
+        if (!ComHelpers.TryGetRequiredProperty(_item, "Fields", out var fields) || fields is null)
+        {
+            return null;
+        }
+
+        object? field = null;
+        try
+        {
+            field = ComHelpers.Invoke(fields, "Item", name);
+            return field is null ? null : ComHelpers.GetProperty(field, "Value");
+        }
+        catch (Exception ex) when (ex.HResult == ComHelpers.EFail)
+        {
+            // So meldet David ein Feld, das es für diesen Typ nicht gibt.
+            return null;
+        }
+        finally
+        {
+            ComHelpers.Release(field);
+            ComHelpers.Release(fields);
         }
     }
 
@@ -134,16 +216,8 @@ internal sealed class DavidComItem : IDavidItem
             return false;
         }
 
-        var raw = ComHelpers.Enumerate(collection)
-            .FirstOrDefault(candidate =>
-            {
-                var name = ComHelpers.GetFirstString(
-                    candidate,
-                    "FileName",
-                    "DisplayName",
-                    "Name");
-                return string.Equals(name, attachment.FileName, StringComparison.OrdinalIgnoreCase);
-            });
+        // Über die Position, weil David mehrere Anhänge gleichen Namens zulässt.
+        var raw = ComHelpers.EnumerateRequired(collection).ElementAtOrDefault(attachment.Index);
 
         if (raw is null)
         {
@@ -155,24 +229,30 @@ internal sealed class DavidComItem : IDavidItem
         var fileName = SanitizeFileName(attachment.FileName);
         var target = Path.Combine(directory, fileName);
 
-        try
-        {
-            ComHelpers.Invoke(raw, "CopyOut", directory, attachment.FileName);
-        }
-        catch (Exception ex)
-        {
-            error = ex.Message;
-        }
+        // Reste eines früheren Versuchs dürfen nicht als Ergebnis dieses Versuchs gelten.
+        File.Delete(target);
 
-        if (!File.Exists(target))
+        // Die zwei Aufrufformen, weil David je nach Version Verzeichnis oder Dateipfad erwartet.
+        foreach (var destination in new[] { directory, target })
         {
+            if (File.Exists(target))
+            {
+                break;
+            }
+
             try
             {
-                ComHelpers.Invoke(raw, "CopyOut", target, attachment.FileName);
+                ComHelpers.Invoke(raw, "CopyOut", destination, attachment.FileName);
             }
             catch (Exception ex)
             {
                 error ??= ex.Message;
+
+                // Ein abgebrochenes CopyOut kann eine Teildatei hinterlassen.
+                if (File.Exists(target) && new FileInfo(target).Length != attachment.SizeBytes)
+                {
+                    File.Delete(target);
+                }
             }
         }
 
@@ -185,22 +265,13 @@ internal sealed class DavidComItem : IDavidItem
 
         if (!File.Exists(target))
         {
-            var found = Directory.GetFiles(directory)
-                .FirstOrDefault(file =>
-                    string.Equals(
-                        Path.GetFileName(file),
-                        fileName,
-                        StringComparison.OrdinalIgnoreCase));
-
-            if (found is not null)
-            {
-                target = found;
-            }
+            error ??= $"CopyOut für '{attachment.FileName}' lieferte keine Datei.";
+            return false;
         }
 
-        if (!File.Exists(target))
+        if (attachment.SizeBytes > 0 && new FileInfo(target).Length == 0)
         {
-            error ??= $"CopyOut für '{attachment.FileName}' lieferte keine Datei.";
+            error = $"CopyOut für '{attachment.FileName}' lieferte eine leere Datei.";
             return false;
         }
 
@@ -234,7 +305,7 @@ internal sealed class DavidComItem : IDavidItem
             return null;
         }
 
-        var text = ComHelpers.GetFirstString(
+        var text = ComHelpers.GetRequiredString(
             value,
             "PlainText",
             "Text",
@@ -258,7 +329,7 @@ internal sealed class DavidComItem : IDavidItem
             return null;
         }
 
-        var html = ComHelpers.GetFirstString(value, "HTMLText", "HTML", "Html");
+        var html = ComHelpers.GetRequiredString(value, "HTMLText", "HTML", "Html");
         if (!string.IsNullOrWhiteSpace(html))
         {
             return html;
@@ -275,7 +346,7 @@ internal sealed class DavidComItem : IDavidItem
         }
 
         var addresses = new List<string>();
-        foreach (var address in ComHelpers.Enumerate(value))
+        foreach (var address in ComHelpers.EnumerateRequired(value))
         {
             var resolved = ResolveAddress(address);
             if (!string.IsNullOrWhiteSpace(resolved))
@@ -294,7 +365,7 @@ internal sealed class DavidComItem : IDavidItem
             return null;
         }
 
-        var text = ComHelpers.GetFirstString(value, "Address", "EMail", "Email", "Name", "DisplayName");
+        var text = ComHelpers.GetRequiredString(value, "Address", "EMail", "Email", "Name", "DisplayName");
         if (!string.IsNullOrWhiteSpace(text))
         {
             return text;
@@ -310,7 +381,11 @@ internal sealed class DavidComItem : IDavidItem
 
         foreach (var name in PropertyCandidates)
         {
-            if (!ComHelpers.TryGetProperty(_item, name, out var value) || value is null)
+            // VCard meldet am echten David auf Mail, Termin und Aufgabe E_FAIL statt "nicht vorhanden".
+            var isReadable = name == "VCard"
+                ? ComHelpers.TryGetProperty(_item, name, out var value)
+                : ComHelpers.TryGetRequiredProperty(_item, name, out value);
+            if (!isReadable || value is null)
             {
                 continue;
             }
@@ -334,8 +409,8 @@ internal sealed class DavidComItem : IDavidItem
 
             var text = name switch
             {
-                "From" or "To" or "CC" => ResolveAddress(value),
-                "Attendees" or "Recipients" => ResolveAddressList(value),
+                "From" or "To" => ResolveAddress(value),
+                "CC" or "Attendees" or "Recipients" => ResolveAddressList(value),
                 _ => ComHelpers.ToScalarString(value)
             };
 
@@ -345,6 +420,16 @@ internal sealed class DavidComItem : IDavidItem
             }
 
             values[name] = text;
+        }
+
+        // FaxItem und VoiceItem haben kein From; der Absender steht in Caller oder Fields.
+        if (HasFieldsOnly && !values.ContainsKey("From"))
+        {
+            var sender = values.GetValueOrDefault("Caller") ?? FieldText("FullnameFrom") ?? FieldText("SRFrom");
+            if (sender is not null)
+            {
+                values["From"] = sender;
+            }
         }
 
         values["ArchivePath"] = ComHelpers.GetFirstString(_item, "ArchivePath", "Archive")

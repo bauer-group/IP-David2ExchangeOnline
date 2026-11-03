@@ -187,6 +187,12 @@ public sealed class MockDavidSession : IDavidSession
 
         public string Type { get; }
 
+        public string? SourceFile => null;
+
+        public bool? IsReceived => null;
+
+        public int? AttachmentCount => null;
+
         public string? Subject { get; }
 
         public long? SizeBytes { get; }

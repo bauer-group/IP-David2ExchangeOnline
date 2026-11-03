@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: MIT
-using System.Collections.Concurrent;
 using System.Globalization;
-using System.Net.Http;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
-using System.Text.RegularExpressions;
+using System.Threading.Channels;
+using David2Exchange.Infrastructure;
 using Microsoft.Exchange.WebServices.Data;
 using Microsoft.Identity.Client;
 using EwsTask = Microsoft.Exchange.WebServices.Data.Task;
@@ -14,9 +13,15 @@ using Task = System.Threading.Tasks.Task;
 namespace David2Exchange.Output;
 
 /// <summary>
-/// Echte Exchange-Online-Ausgabe über EWS app-only (Zertifikat, Impersonation).
-/// Unterstützt Mail/Fax/SMS/Voice/Chat als EML, Kalender als Appointment und
-/// Kontakte als Contact. Unterordner werden unter dem Zielordner nachgebildet.
+/// Exchange-Online-Ausgabe über EWS app-only (Zertifikat, Impersonation). Mail/Fax/SMS/Voice/Chat
+/// werden als MIME per CreateItems im Batch gespeichert, Termine, Kontakte und Aufgaben einzeln.
+///
+/// <para>
+/// Sichere Übertragung: Jeder Worker mietet eine eigene <see cref="ExchangeService"/>-Instanz.
+/// Nach einem Fehler mit unbekanntem Ausgang wird vor dem erneuten Senden über die eigene
+/// Kennung (<see cref="ItemKeyProperty"/>) im Zielordner gesucht. Jedes gespeicherte Item wird
+/// über seine ItemId samt Elternordner gegengeprüft, statt dem Server-Erfolg allein zu trauen.
+/// </para>
 /// </summary>
 public sealed class EwsOutputTarget : IOutputTarget
 {
@@ -35,100 +40,94 @@ public sealed class EwsOutputTarget : IOutputTarget
     private static readonly ExtendedPropertyDefinition PidTagDeliveryReportRequested =
         new(0x0023, MapiPropertyType.Boolean);
 
-    // Stabile Idempotenz für Kalender/Kontakte (keine Message-ID vorhanden).
+    // Stabile Kennung jedes migrierten Objekts im Ziel.
     private static readonly ExtendedPropertyDefinition ItemKeyProperty = new(
         new Guid("7f9c1a52-3b6e-4f0a-9d2c-5e8b1a4c7d90"),
         "david2exchange.ItemKey",
         MapiPropertyType.String);
 
-    // Sicherheitsmodus: EWS-Batching ist deaktiviert. Jedes Item wird
-    // einzeln mit explizitem FolderId importiert; 8 Worker parallel.
-    private const int BatchSize = 1;
-    private const int MaxRetries = 5;
-    private const int BaseRetryDelayMs = 1_000;
-    private const int MaxRetryDelayMs = 30_000;
+    private static readonly PropertySet LookupProperties = new(BasePropertySet.IdOnly, ItemKeyProperty);
+
+    private static readonly PropertySet VerifyProperties =
+        new(BasePropertySet.IdOnly, ItemSchema.ParentFolderId, ItemKeyProperty);
+
+    // Importe früherer Versionen können fremde Inhalte tragen und zählen nicht als vorhanden.
+    private const string ItemKeyVersion = "v2|";
+
+    private const string PolicyReasonHeader = "X-EWS-Policy-Reason";
+    private const int MaxAttempts = 8;
+    private const int MinimumTimeoutMs = 120_000;
+    private const int MaximumTimeoutMs = 900_000;
+    private const int BytesPerSecondAssumed = 128 * 1024;
+
+    private static readonly TimeSpan MaximumRetryDelay = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan MaximumServerBackOff = TimeSpan.FromMinutes(10);
+
+    // Exchange kann einen Batch nach einem Verbindungsabbruch noch bis zum Ablauf des
+    // dokumentierten Limits von einer Minute verarbeiten.
+    private static readonly TimeSpan ServerSettleTime = TimeSpan.FromSeconds(65);
 
     private readonly EwsOutputOptions _options;
-    private readonly Dictionary<string, Folder> _folderCache =
-        new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<WellKnownFolderName, Folder> _wellKnownFolders = new();
+    private readonly TimeZoneInfo _timeZone;
+    private readonly Func<TimeSpan, CancellationToken, Task> _delay;
+    private readonly Dictionary<string, FolderId> _folderCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<WellKnownFolderName, FolderId> _wellKnownFolders = new();
     private readonly SemaphoreSlim _folderLock = new(1, 1);
+    private readonly Channel<ServiceLease> _workers = Channel.CreateUnbounded<ServiceLease>();
 
-    private ExchangeService? _service;
-    private IReadOnlyList<ExchangeService> _services = Array.Empty<ExchangeService>();
-    private int _serviceIndex;
+    private Func<bool, CancellationToken, Task<string>>? _tokenProvider;
+    private ServiceLease? _folderLease;
+    private long _resumeAtMilliseconds;
     private int _written;
     private int _alreadyPresent;
 
     public EwsOutputTarget(EwsOutputOptions options)
+        : this(options, null, null)
     {
-        _options = options;
     }
 
-    public string Name => "ews";
+    /// <param name="tokenProvider">Liefert das Zugriffstoken; true erzwingt ein neues.</param>
+    /// <param name="delay">Wartefunktion für Wiederholungen.</param>
+    internal EwsOutputTarget(
+        EwsOutputOptions options,
+        Func<bool, CancellationToken, Task<string>>? tokenProvider,
+        Func<TimeSpan, CancellationToken, Task>? delay)
+    {
+        _options = options;
+        _tokenProvider = tokenProvider;
+        _delay = delay ?? Task.Delay;
+        _timeZone = DavidTimeZone.Resolve(options.TimeZone);
+    }
+
+    public string Name => OutputTargetFactory.TargetName("ews", _options.TargetUpn);
 
     public async Task OpenAsync(OutputContext context, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        var certificate = LoadCertificate(_options.CertificateThumbprint);
-        var app = ConfidentialClientApplicationBuilder
-            .Create(_options.ClientId)
-            .WithCertificate(certificate)
-            .WithTenantId(_options.TenantId)
-            .Build();
+        _tokenProvider ??= CreateTokenProvider();
 
-        var token = await app
-            .AcquireTokenForClient(new[] { "https://outlook.office365.com/.default" })
-            .ExecuteAsync(cancellationToken);
+        _folderLease = new ServiceLease(CreateService());
+        await PrepareAsync(_folderLease, forceRefresh: false, cancellationToken);
 
-        ExchangeService CreateService()
+        // Früh scheitern: Anmeldung, Sperren und Impersonation noch vor dem ersten David-Export prüfen.
+        await BindWellKnownAsync(WellKnownFolderName.Inbox, cancellationToken);
+
+        for (var i = 0; i < _options.Workers; i++)
         {
-            var service = new ExchangeService(ExchangeVersion.Exchange2013_SP1)
-            {
-                Url = new Uri(_options.EwsUrl),
-                Credentials = new OAuthCredentials(token.AccessToken),
-                ImpersonatedUserId = new ImpersonatedUserId(
-                    ConnectingIdType.SmtpAddress,
-                    _options.TargetUpn),
-                Timeout = 60_000
-            };
-
-            service.HttpHeaders["X-AnchorMailbox"] = _options.TargetUpn;
-            service.UserAgent = "david2exchange/0.2";
-            return service;
+            _workers.Writer.TryWrite(new ServiceLease(CreateService()));
         }
 
-        _services = Enumerable.Range(0, 8).Select(_ => CreateService()).ToList();
-        _service = _services[0];
-
-        Console.WriteLine(
-            $"  EWS verbunden: {_options.TargetUpn} · Ziel: bestehende Ordner (Inbox, Sent Items, Kalender, Kontakte)");
+        Console.WriteLine($"  EWS verbunden: {_options.TargetUpn}");
     }
 
     public async Task WriteItemAsync(OutputItem item, CancellationToken cancellationToken)
     {
-        if (_service is null)
+        var results = await WriteBatchAsync(new[] { item }, cancellationToken);
+        var result = results[0];
+        if (!result.Success)
         {
-            throw new InvalidOperationException("EwsOutputTarget wurde nicht geöffnet.");
-        }
-
-        var folder = await GetTargetFolderAsync(item, cancellationToken);
-
-        switch (item.Kind)
-        {
-            case "calendar":
-                await CreateAppointmentAsync(item, folder, cancellationToken);
-                break;
-            case "contact":
-                await CreateContactAsync(item, folder, cancellationToken);
-                break;
-            case "task":
-                await CreateTaskAsync(item, folder, cancellationToken);
-                break;
-            default:
-                await ImportMailAsync(item, folder, cancellationToken);
-                break;
+            throw new InvalidOperationException(result.Error);
         }
     }
 
@@ -136,480 +135,642 @@ public sealed class EwsOutputTarget : IOutputTarget
         IReadOnlyList<OutputItem> items,
         CancellationToken cancellationToken)
     {
-        if (_service is null || _services.Count == 0)
+        if (_folderLease is null)
         {
             throw new InvalidOperationException("EwsOutputTarget wurde nicht geöffnet.");
         }
 
         var results = new List<OutputResult>(items.Count);
-        var mailGroups = new Dictionary<string, (Folder Folder, List<OutputItem> Items)>(
-            StringComparer.OrdinalIgnoreCase);
-
-        foreach (var item in items)
-        {
-            if (item.Kind != "mail")
-            {
-                try
-                {
-                    await WriteItemAsync(item, cancellationToken);
-                    results.Add(new OutputResult(item, true, null));
-                }
-                catch (Exception ex)
-                {
-                    results.Add(new OutputResult(item, false, ex.Message));
-                }
-
-                continue;
-            }
-
-            var folder = await GetTargetFolderAsync(item, cancellationToken);
-            var folderKey = $"{folder.Id.UniqueId}|{folder.DisplayName}";
-            if (!mailGroups.TryGetValue(folderKey, out var group))
-            {
-                group = (folder, new List<OutputItem>());
-                mailGroups[folderKey] = group;
-                Console.WriteLine($"  ZIEL {item.FolderPath,-20} -> {folder.DisplayName}");
-            }
-
-            group.Items.Add(item);
-        }
-
-        foreach (var group in mailGroups.Values)
-        {
-            foreach (var chunk in group.Items.Chunk(BatchSize))
-            {
-                var service = _services[
-                    (int)((uint)Interlocked.Increment(ref _serviceIndex) % _services.Count)];
-                results.AddRange(await CreateMailBatchAsync(
-                    service,
-                    group.Folder,
-                    chunk,
-                    cancellationToken));
-            }
-        }
-
-        return results;
-    }
-
-    private async Task<IReadOnlyList<OutputResult>> CreateMailBatchAsync(
-        ExchangeService service,
-        Folder folder,
-        IReadOnlyList<OutputItem> items,
-        CancellationToken cancellationToken)
-    {
-        var pending = new List<(OutputItem Item, EmailMessage Message, string? MessageId)>(items.Count);
-        var results = new List<OutputResult>(items.Count);
-
-        foreach (var item in items)
-        {
-            if (string.IsNullOrWhiteSpace(item.StagedEmlPath) ||
-                !File.Exists(item.StagedEmlPath))
-            {
-                results.Add(new OutputResult(
-                    item,
-                    false,
-                    $"EWS-Ausgabe benötigt eine EML-Datei; Item {item.Id} hat keine."));
-                continue;
-            }
-
-            var bytes = await File.ReadAllBytesAsync(item.StagedEmlPath, cancellationToken);
-            var messageId = TryReadMessageId(bytes);
-            var message = new EmailMessage(service)
-            {
-                MimeContent = new MimeContent("UTF-8", bytes),
-                IsRead = item.IsRead ?? false
-            };
-
-            message.SetExtendedProperty(PidTagMessageFlags, item.IsRead == true ? 1 : 0);
-            message.SetExtendedProperty(ItemKeyProperty, BuildItemKey(item));
-
-            if (item.ReceivedLocal.HasValue)
-            {
-                message.SetExtendedProperty(
-                    PidTagMessageDeliveryTime,
-                    item.ReceivedLocal.Value.ToUniversalTime());
-            }
-
-            if (item.SentLocal.HasValue)
-            {
-                message.SetExtendedProperty(
-                    PidTagClientSubmitTime,
-                    item.SentLocal.Value.ToUniversalTime());
-            }
-
-            message.SetExtendedProperty(PidTagReadReceiptRequested, false);
-            message.SetExtendedProperty(PidTagDeliveryReportRequested, false);
-            pending.Add((item, message, messageId));
-        }
-
-        if (pending.Count == 0)
-        {
-            return results;
-        }
-
-        // Sicherheitsmodus: ein Item wird direkt in den expliziten Ordner
-        // gespeichert. CreateItems mit MimeContent hat sich für die
-        // Ordnerzuordnung nicht als zuverlässig erwiesen.
-        if (pending.Count == 1)
-        {
-            var entry = pending[0];
-            try
-            {
-                if (entry.Item.CheckExisting)
-                {
-                    var exists = !string.IsNullOrWhiteSpace(entry.MessageId)
-                        ? await ExistsWithRetryAsync(
-                            entry.MessageId!,
-                            folder,
-                            cancellationToken,
-                            service)
-                        : await ExistsByItemKeyAsync(
-                            entry.Item,
-                            folder,
-                            cancellationToken,
-                            service);
-
-                    if (exists)
-                    {
-                        Interlocked.Increment(ref _alreadyPresent);
-                        results.Add(new OutputResult(entry.Item, true, null, true));
-                        return results;
-                    }
-                }
-
-                await SaveWithRetryAsync(
-                    () => entry.Message.Save(folder.Id),
-                    cancellationToken);
-                Interlocked.Increment(ref _written);
-                results.Add(new OutputResult(entry.Item, true, null));
-            }
-            catch (Exception ex)
-            {
-                results.Add(new OutputResult(entry.Item, false, ex.Message));
-            }
-
-            return results;
-        }
+        var mimeGroups = new Dictionary<string, (FolderId Folder, List<OutputItem> Items)>(StringComparer.Ordinal);
+        var lease = await _workers.Reader.ReadAsync(cancellationToken);
 
         try
         {
-            var responses = await CreateItemsWithRetryAsync(
-                service,
-                pending.Select(entry => entry.Message).ToList(),
-                folder.Id,
-                cancellationToken);
-
-            for (var i = 0; i < pending.Count; i++)
+            foreach (var item in items)
             {
-                var item = pending[i].Item;
-                var batchError = i < responses.Count
-                    ? $"{responses[i].Result}: {responses[i].ErrorMessage}"
-                    : "Keine ServiceResponse";
-
-                if (i < responses.Count && responses[i].Result == ServiceResult.Success)
-                {
-                    var verified = false;
-                    if (!string.IsNullOrWhiteSpace(pending[i].MessageId))
-                    {
-                        try
-                        {
-                            verified = await ExistsWithRetryAsync(
-                                pending[i].MessageId!,
-                                folder,
-                                cancellationToken,
-                                service);
-
-                            if (!verified)
-                            {
-                                // Batch kann trotz Success im falschen Ordner landen.
-                                verified = await EnsureMessageInFolderAsync(
-                                    pending[i].MessageId!,
-                                    folder,
-                                    cancellationToken,
-                                    service);
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            batchError =
-                                $"Batch-Verifikation fehlgeschlagen: {ex.Message}";
-                        }
-                    }
-
-                    if (verified)
-                    {
-                        Interlocked.Increment(ref _written);
-                        results.Add(new OutputResult(item, true, null));
-                        continue;
-                    }
-
-                    batchError = string.IsNullOrWhiteSpace(batchError)
-                        ? "Batch meldete Erfolg, Item nicht im Zielordner gefunden"
-                        : batchError;
-                }
-
-                // Ein fehlgeschlagener/verschwundener Batch darf keine Items
-                // verschlucken. Einzelimport mit Dedupe-Prüfung.
+                FolderId folder;
                 try
                 {
-                    await WriteItemAsync(
-                        item with { CheckExisting = true },
-                        cancellationToken);
-                    results.Add(new OutputResult(item, true, null));
+                    folder = await GetTargetFolderAsync(item, cancellationToken);
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (IsItemLevelFailure(ex))
                 {
-                    results.Add(new OutputResult(
-                        item,
-                        false,
-                        $"{batchError}; Einzelimport: {ex.Message}"));
+                    results.Add(Failed(item, $"Zielordner nicht verfügbar: {Describe(ex)}", retryable: true));
+                    continue;
                 }
-            }
-        }
-        catch (Exception ex)
-        {
-            foreach (var entry in pending)
-            {
-                try
-                {
-                    await WriteItemAsync(entry.Item, cancellationToken);
-                    results.Add(new OutputResult(entry.Item, true, null));
-                }
-                catch (Exception itemEx)
-                {
-                    results.Add(new OutputResult(
-                        entry.Item,
-                        false,
-                        $"Batch: {ex.Message}; Einzelimport: {itemEx.Message}"));
-                }
-            }
-        }
 
-        return results;
-    }
+                if (IsMime(item))
+                {
+                    if (!mimeGroups.TryGetValue(folder.UniqueId, out var group))
+                    {
+                        group = (folder, new List<OutputItem>());
+                        mimeGroups[folder.UniqueId] = group;
+                    }
 
-    private async Task SaveWithRetryAsync(
-        Func<Task> save,
-        CancellationToken cancellationToken)
-    {
-        for (var attempt = 0; ; attempt++)
+                    group.Items.Add(item);
+                }
+                else
+                {
+                    results.Add(await WriteSingleAsync(lease, item, folder, cancellationToken));
+                }
+            }
+
+            foreach (var group in mimeGroups.Values)
+            {
+                var pending = group.Items.Select(item => new PendingItem(item)).ToList();
+                await ImportMimeAsync(lease, group.Folder, pending, results, cancellationToken);
+            }
+
+            return results;
+        }
+        finally
         {
-            try
-            {
-                await save();
-                return;
-            }
-            catch (Exception ex) when (
-                attempt < MaxRetries &&
-                IsTransientEwsError(ex) &&
-                !cancellationToken.IsCancellationRequested)
-            {
-                var delay = GetRetryDelay(ex, attempt);
-                Console.Error.WriteLine(
-                    $"  EWS-Throttling: {ex.Message} · Retry {attempt + 1}/{MaxRetries} in {delay} ms");
-                await Task.Delay(delay, cancellationToken);
-            }
+            _workers.Writer.TryWrite(lease);
         }
     }
 
-    private async Task<ServiceResponseCollection<ServiceResponse>> CreateItemsWithRetryAsync(
-        ExchangeService service,
-        IReadOnlyList<EmailMessage> messages,
-        FolderId folderId,
+    public Task CompleteAsync(OutputSummary summary, CancellationToken cancellationToken)
+    {
+        Console.WriteLine(
+            $"  EWS: {Volatile.Read(ref _written)} Items importiert, " +
+            $"{Volatile.Read(ref _alreadyPresent)} bereits vorhanden.");
+        return Task.CompletedTask;
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        _workers.Writer.TryComplete();
+        _folderLock.Dispose();
+        return ValueTask.CompletedTask;
+    }
+
+    private static bool IsMime(OutputItem item)
+    {
+        return item.Kind is not ("calendar" or "contact" or "task");
+    }
+
+    /// <summary>
+    /// Speichert MIME-Items in einen Ordner: nachsehen falls nötig, senden, Antworten einzeln
+    /// auswerten, Gespeichertes prüfen, Rest nach Wartezeit wiederholen.
+    /// </summary>
+    private async Task ImportMimeAsync(
+        ServiceLease lease,
+        FolderId folder,
+        List<PendingItem> pending,
+        List<OutputResult> results,
         CancellationToken cancellationToken)
     {
-        for (var attempt = 0; ; attempt++)
+        var tokenRefreshed = false;
+
+        for (var attempt = 0; pending.Count > 0 && attempt < MaxAttempts; attempt++)
         {
             try
             {
-                return await service.CreateItems(
-                    messages,
-                    folderId,
+                await ResolveMaybeExistingAsync(lease, folder, pending, results, cancellationToken);
+            }
+            catch (Exception ex) when (IsRetryable(ex))
+            {
+                // Nachsehen war nicht möglich: Der Ausgang bleibt offen, also nicht senden.
+                pending.ForEach(entry => entry.LastError = $"Prüfung im Ziel fehlgeschlagen: {Describe(ex)}");
+                await BackOffAsync(ex, attempt, cancellationToken);
+                continue;
+            }
+
+            if (pending.Count == 0)
+            {
+                break;
+            }
+
+            var messages = await BuildMessagesAsync(lease.Service, pending, results, cancellationToken);
+            if (messages.Count == 0)
+            {
+                break;
+            }
+
+            await PrepareAsync(lease, forceRefresh: false, cancellationToken);
+            lease.Service.Timeout = TimeoutFor(messages.Sum(entry => entry.Bytes));
+
+            ServiceResponseCollection<ServiceResponse>? responses = null;
+            Exception? failure = null;
+            try
+            {
+                await WaitForGateAsync(cancellationToken);
+                responses = await lease.Service.CreateItems(
+                    messages.Select(entry => (Item)entry.Message),
+                    folder,
                     MessageDisposition.SaveOnly,
                     null);
             }
-            catch (Exception ex) when (
-                attempt < MaxRetries &&
-                IsTransientEwsError(ex) &&
-                !cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                var delay = GetRetryDelay(ex, attempt);
-                Console.Error.WriteLine(
-                    $"  EWS-Throttling: {ex.Message} · Retry {attempt + 1}/{MaxRetries} in {delay} ms");
-                await Task.Delay(delay, cancellationToken);
+                throw;
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+            }
+
+            var saved = new List<SendEntry>();
+            TimeSpan? serverBackOff = null;
+
+            for (var i = 0; i < messages.Count; i++)
+            {
+                var entry = messages[i];
+                if (!entry.Message.IsNew)
+                {
+                    // Auch bei einer teilweise gelesenen Antwort: Dieses Item hat eine Id.
+                    saved.Add(entry);
+                    continue;
+                }
+
+                if (responses is null || i >= responses.Count)
+                {
+                    continue;
+                }
+
+                var response = responses[i];
+                if (response.Result == ServiceResult.Success)
+                {
+                    // Erfolg ohne ItemId ist nicht belegt: vor dem nächsten Senden nachsehen.
+                    entry.Pending.MayExist = true;
+                    entry.Pending.LastError = "Server meldete Erfolg ohne ItemId.";
+                    continue;
+                }
+
+                var kind = EwsFailure.Classify(response.ErrorCode);
+                entry.Pending.LastError = $"{response.ErrorCode}: {response.ErrorMessage}";
+                serverBackOff = EwsFailure.ServerBackOff(response) ?? serverBackOff;
+
+                switch (kind)
+                {
+                    case EwsFailureKind.Permanent:
+                        pending.Remove(entry.Pending);
+                        results.Add(Failed(entry.Pending.Item, entry.Pending.LastError, retryable: false));
+                        break;
+                    case EwsFailureKind.Ambiguous:
+                        entry.Pending.MayExist = true;
+                        break;
+                    case EwsFailureKind.AbortMailbox:
+                    case EwsFailureKind.AbortRun:
+                        throw new OutputAbortedException(
+                            $"{_options.TargetUpn}: {entry.Pending.LastError}",
+                            kind == EwsFailureKind.AbortRun);
+                }
+            }
+
+            foreach (var entry in saved)
+            {
+                pending.Remove(entry.Pending);
+            }
+
+            await VerifyAsync(lease, folder, saved, results, cancellationToken);
+
+            if (failure is not null)
+            {
+                var kind = EwsFailure.Classify(failure);
+                var status = EwsFailure.HttpStatus(failure);
+                if (status == EwsFailure.Unauthorized && !tokenRefreshed)
+                {
+                    // Das Token kann kurz vor Ablauf bereits ungültig geworden sein.
+                    tokenRefreshed = true;
+                    await PrepareAsync(lease, forceRefresh: true, cancellationToken);
+                    continue;
+                }
+
+                switch (kind)
+                {
+                    case EwsFailureKind.AbortMailbox:
+                    case EwsFailureKind.AbortRun:
+                        throw new OutputAbortedException(AbortMessage(lease, failure), kind == EwsFailureKind.AbortRun, failure);
+
+                    case EwsFailureKind.Permanent when pending.Count > 1:
+                        // Ein einzelnes Item kann die ganze Anfrage ablehnen lassen. Die Antwort sagt
+                        // aber nicht, was davor gespeichert wurde: erst nachsehen, dann einzeln senden.
+                        pending.ForEach(entry => entry.MayExist = true);
+                        await IsolateAsync(lease, folder, pending, results, cancellationToken);
+                        return;
+
+                    case EwsFailureKind.Permanent:
+                        pending.ForEach(entry =>
+                            results.Add(Failed(entry.Item, Describe(failure), retryable: false)));
+                        pending.Clear();
+                        return;
+
+                    case EwsFailureKind.Ambiguous:
+                        pending.ForEach(entry => entry.MayExist = true);
+                        break;
+                }
+
+                pending.ForEach(entry => entry.LastError = Describe(failure));
+                await WaitAfterFailureAsync(failure, kind, attempt, cancellationToken);
+            }
+            else if (pending.Count > 0)
+            {
+                await BackOffAsync(serverBackOff, attempt, cancellationToken);
+            }
+        }
+
+        foreach (var entry in pending)
+        {
+            results.Add(Failed(entry.Item, entry.LastError ?? "Nicht übertragen.", retryable: true));
+        }
+    }
+
+    private async Task IsolateAsync(
+        ServiceLease lease,
+        FolderId folder,
+        List<PendingItem> pending,
+        List<OutputResult> results,
+        CancellationToken cancellationToken)
+    {
+        foreach (var entry in pending)
+        {
+            await ImportMimeAsync(lease, folder, new List<PendingItem> { entry }, results, cancellationToken);
+        }
+    }
+
+    /// <summary>Items mit möglichem früherem Versuch werden im Zielordner gesucht.</summary>
+    private async Task ResolveMaybeExistingAsync(
+        ServiceLease lease,
+        FolderId folder,
+        List<PendingItem> pending,
+        List<OutputResult> results,
+        CancellationToken cancellationToken)
+    {
+        var lookups = pending.Where(entry => entry.MayExist).ToList();
+        if (lookups.Count == 0)
+        {
+            return;
+        }
+
+        var found = await FindExistingAsync(
+            lease,
+            folder,
+            lookups.Select(entry => TargetKey(entry.Item)).ToList(),
+            cancellationToken);
+
+        foreach (var entry in lookups)
+        {
+            if (found.TryGetValue(TargetKey(entry.Item), out var existingId))
+            {
+                pending.Remove(entry);
+                Interlocked.Increment(ref _alreadyPresent);
+                results.Add(new OutputResult(entry.Item, true, null, AlreadyPresent: true, TargetId: existingId));
+            }
+            else
+            {
+                entry.MayExist = false;
             }
         }
     }
 
-    private static bool IsTransientEwsError(Exception exception)
-    {
-        if (exception is ServiceResponseException responseException)
-        {
-            return responseException.ErrorCode is
-                ServiceError.ErrorServerBusy or
-                ServiceError.ErrorTimeoutExpired or
-                ServiceError.ErrorBatchProcessingStopped or
-                ServiceError.ErrorInternalServerTransientError or
-                ServiceError.ErrorInternalServerError;
-        }
-
-        return exception is ServiceRequestException or
-            HttpRequestException or
-            TimeoutException;
-    }
-
-    private static int GetRetryDelay(Exception exception, int attempt)
-    {
-        if (exception is ServiceResponseException responseException &&
-            responseException.Response?.ErrorDetails is { } details &&
-            details.TryGetValue("BackOffMilliseconds", out var backOffText) &&
-            int.TryParse(backOffText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var backOff))
-        {
-            return Math.Clamp(backOff, BaseRetryDelayMs, MaxRetryDelayMs);
-        }
-
-        var exponential = BaseRetryDelayMs * (1 << Math.Min(attempt, 5));
-        var jitter = Random.Shared.Next(0, 500);
-        return Math.Min(MaxRetryDelayMs, exponential + jitter);
-    }
-
-    private async Task ImportMailAsync(
-        OutputItem item,
-        Folder folder,
+    private async Task<Dictionary<string, string>> FindExistingAsync(
+        ServiceLease lease,
+        FolderId folder,
+        IReadOnlyList<string> keys,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(item.StagedEmlPath) || !File.Exists(item.StagedEmlPath))
+        SearchFilter filter = keys.Count == 1
+            ? new SearchFilter.IsEqualTo(ItemKeyProperty, keys[0])
+            : new SearchFilter.SearchFilterCollection(
+                LogicalOperator.Or,
+                keys.Select(key => (SearchFilter)new SearchFilter.IsEqualTo(ItemKeyProperty, key)));
+        var view = new ItemView(keys.Count * 2) { PropertySet = LookupProperties };
+        var found = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        while (true)
         {
-            throw new InvalidOperationException(
-                $"EWS-Ausgabe benötigt eine EML-Datei; Item {item.Id} ({item.Type}) hat keine.");
+            var result = await CallAsync(
+                lease,
+                service => service.FindItems(folder, filter, view),
+                cancellationToken);
+
+            foreach (var item in result.Items)
+            {
+                if (item.TryGetProperty(ItemKeyProperty, out string? key) && key is not null)
+                {
+                    found[key] = item.Id.UniqueId;
+                }
+            }
+
+            // EWS darf unter Last Teilergebnisse liefern; was fehlt, gilt erst danach als nicht vorhanden.
+            if (!result.MoreAvailable || found.Count == keys.Count)
+            {
+                return found;
+            }
+
+            if (result.Items.Count == 0)
+            {
+                throw new TimeoutException("EWS meldet weitere Treffer, liefert aber keine; die Suche im Ziel ist nicht schlüssig.");
+            }
+
+            view.Offset += result.Items.Count;
+        }
+    }
+
+    private async Task<List<SendEntry>> BuildMessagesAsync(
+        ExchangeService service,
+        List<PendingItem> pending,
+        List<OutputResult> results,
+        CancellationToken cancellationToken)
+    {
+        var messages = new List<SendEntry>(pending.Count);
+        foreach (var entry in pending.ToList())
+        {
+            var path = entry.Item.StagedEmlPath;
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            {
+                pending.Remove(entry);
+                results.Add(Failed(
+                    entry.Item,
+                    $"EWS-Ausgabe benötigt eine EML-Datei; Item {entry.Item.Id} hat keine.",
+                    retryable: false));
+                continue;
+            }
+
+            // Je Versuch neu aufbauen: Eine einmal gespeicherte Instanz ist nicht mehr "new".
+            var bytes = await File.ReadAllBytesAsync(path, cancellationToken);
+            messages.Add(new SendEntry(entry, CreateMessage(service, entry.Item, bytes), bytes.Length));
         }
 
-        var bytes = await File.ReadAllBytesAsync(item.StagedEmlPath, cancellationToken);
-        var messageId = TryReadMessageId(bytes);
+        return messages;
+    }
 
-        if (item.CheckExisting &&
-            !string.IsNullOrWhiteSpace(messageId) &&
-            await ExistsAsync(messageId, folder, cancellationToken))
-        {
-            Interlocked.Increment(ref _alreadyPresent);
-            return;
-        }
-
-        if (item.CheckExisting &&
-            await ExistsByItemKeyAsync(item, folder, cancellationToken))
-        {
-            Interlocked.Increment(ref _alreadyPresent);
-            return;
-        }
-
-        var message = new EmailMessage(_service!)
+    private EmailMessage CreateMessage(ExchangeService service, OutputItem item, byte[] bytes)
+    {
+        var message = new EmailMessage(service)
         {
             MimeContent = new MimeContent("UTF-8", bytes),
             IsRead = item.IsRead ?? false
         };
 
+        // Ohne PidTagMessageFlags legt Exchange MIME-Importe als Entwurf an.
         message.SetExtendedProperty(PidTagMessageFlags, item.IsRead == true ? 1 : 0);
-        message.SetExtendedProperty(ItemKeyProperty, BuildItemKey(item));
+        message.SetExtendedProperty(ItemKeyProperty, TargetKey(item));
 
-        if (item.ReceivedLocal.HasValue)
+        var delivered = item.ReceivedLocal ?? item.SentLocal;
+        if (delivered.HasValue)
         {
-            message.SetExtendedProperty(
-                PidTagMessageDeliveryTime,
-                item.ReceivedLocal.Value.ToUniversalTime());
+            message.SetExtendedProperty(PidTagMessageDeliveryTime, ToUtc(delivered.Value));
         }
 
-        if (item.SentLocal.HasValue)
+        var submitted = item.SentLocal ?? item.ReceivedLocal;
+        if (submitted.HasValue)
         {
-            message.SetExtendedProperty(
-                PidTagClientSubmitTime,
-                item.SentLocal.Value.ToUniversalTime());
+            message.SetExtendedProperty(PidTagClientSubmitTime, ToUtc(submitted.Value));
         }
 
         message.SetExtendedProperty(PidTagReadReceiptRequested, false);
         message.SetExtendedProperty(PidTagDeliveryReportRequested, false);
-
-        await SaveWithRetryAsync(
-            () => message.Save(folder.Id),
-            cancellationToken);
-
-        _written++;
+        return message;
     }
 
-    private async Task CreateAppointmentAsync(
-        OutputItem item,
-        Folder folder,
+    /// <summary>Bestätigt Elternordner und Kennung jedes gespeicherten Items beim Server.</summary>
+    private async Task VerifyAsync(
+        ServiceLease lease,
+        FolderId folder,
+        List<SendEntry> saved,
+        List<OutputResult> results,
         CancellationToken cancellationToken)
     {
-        if (item.CheckExisting &&
-            await ExistsByItemKeyAsync(item, folder, cancellationToken))
+        var unconfirmed = saved;
+        for (var attempt = 0; unconfirmed.Count > 0; attempt++)
         {
-            Interlocked.Increment(ref _alreadyPresent);
-            return;
+            ServiceResponseCollection<GetItemResponse> responses;
+            try
+            {
+                var ids = unconfirmed.Select(entry => entry.Message.Id).ToList();
+                responses = await CallAsync(
+                    lease,
+                    service => service.BindToItems(ids, VerifyProperties),
+                    cancellationToken);
+            }
+            catch (Exception ex) when (IsRetryable(ex))
+            {
+                // Gespeichert, aber nicht bestätigt: Der nächste Versuch sucht zuerst im Ziel.
+                foreach (var entry in unconfirmed)
+                {
+                    results.Add(Failed(entry.Pending.Item, $"Prüfung nach dem Speichern fehlgeschlagen: {Describe(ex)}", retryable: true));
+                }
+
+                return;
+            }
+
+            // Einzelne Items können gedrosselt sein: Diese erneut lesen, nie erneut senden.
+            var retry = new List<SendEntry>();
+            TimeSpan? serverBackOff = null;
+            for (var i = 0; i < unconfirmed.Count; i++)
+            {
+                var entry = unconfirmed[i];
+                var response = i < responses.Count ? responses[i] : null;
+                if (response is { Result: ServiceResult.Success, Item: not null })
+                {
+                    await ConfirmSavedAsync(lease, folder, entry, response.Item, results, cancellationToken);
+                    continue;
+                }
+
+                var kind = response is null ? EwsFailureKind.Ambiguous : EwsFailure.Classify(response.ErrorCode);
+                if (kind is EwsFailureKind.AbortMailbox or EwsFailureKind.AbortRun)
+                {
+                    throw new OutputAbortedException(
+                        $"{_options.TargetUpn}: {response!.ErrorCode}: {response.ErrorMessage}",
+                        kind == EwsFailureKind.AbortRun);
+                }
+
+                if (kind == EwsFailureKind.Permanent)
+                {
+                    results.Add(Failed(entry.Pending.Item, $"Gespeichertes Item nicht auffindbar: {response!.ErrorCode}", retryable: true));
+                }
+                else if (attempt + 1 < MaxAttempts)
+                {
+                    serverBackOff = (response is null ? null : EwsFailure.ServerBackOff(response)) ?? serverBackOff;
+                    retry.Add(entry);
+                }
+                else
+                {
+                    results.Add(Failed(entry.Pending.Item, $"Gespeichert, Prüfung noch nicht bestätigt: {response?.ErrorCode}", retryable: true));
+                }
+            }
+
+            if (retry.Count > 0)
+            {
+                await BackOffAsync(serverBackOff, attempt, cancellationToken);
+            }
+
+            unconfirmed = retry;
+        }
+    }
+
+    private async Task ConfirmSavedAsync(
+        ServiceLease lease,
+        FolderId folder,
+        SendEntry entry,
+        Item stored,
+        List<OutputResult> results,
+        CancellationToken cancellationToken)
+    {
+        var item = entry.Pending.Item;
+        var expected = TargetKey(item);
+        var isExpectedItem = stored.TryGetProperty(ItemKeyProperty, out string? storedKey) &&
+                             string.Equals(storedKey, expected, StringComparison.Ordinal);
+        var isExpectedFolder = string.Equals(
+            stored.ParentFolderId.UniqueId,
+            folder.UniqueId,
+            StringComparison.Ordinal);
+
+        if (isExpectedItem && !isExpectedFolder)
+        {
+            // Folder-IDs können sich in der Darstellung unterscheiden: Die Suche im Zielordner entscheidet.
+            var present = await FindExistingAsync(lease, folder, new[] { expected }, cancellationToken);
+            isExpectedFolder = present.ContainsKey(expected);
         }
 
-        var start = GetDate(item, "StartTime")
-                    ?? item.ReceivedLocal
-                    ?? DateTime.Now;
-        var end = GetDate(item, "StopTime")
-                  ?? start.AddMinutes(30);
-        var body = GetText(item, "BodyText") ?? "";
+        if (isExpectedItem && isExpectedFolder)
+        {
+            Interlocked.Increment(ref _written);
+            results.Add(new OutputResult(item, true, null, TargetId: entry.Message.Id.UniqueId));
+        }
+        else
+        {
+            results.Add(Failed(
+                item,
+                isExpectedItem
+                    ? "Item liegt nicht im vorgesehenen Zielordner."
+                    : "Server meldet ein anderes Item als das gesendete.",
+                retryable: false));
+        }
+    }
+
+    /// <summary>Termin, Kontakt oder Aufgabe einzeln anlegen; dieselben Regeln wie bei MIME.</summary>
+    private async Task<OutputResult> WriteSingleAsync(
+        ServiceLease lease,
+        OutputItem item,
+        FolderId folder,
+        CancellationToken cancellationToken)
+    {
+        var mayExist = item.CheckExisting;
+        var tokenRefreshed = false;
+        string? lastError = null;
+
+        for (var attempt = 0; attempt < MaxAttempts; attempt++)
+        {
+            try
+            {
+                if (mayExist)
+                {
+                    var found = await FindExistingAsync(lease, folder, new[] { TargetKey(item) }, cancellationToken);
+                    if (found.TryGetValue(TargetKey(item), out var existingId))
+                    {
+                        Interlocked.Increment(ref _alreadyPresent);
+                        return new OutputResult(item, true, null, AlreadyPresent: true, TargetId: existingId);
+                    }
+
+                    mayExist = false;
+                }
+
+                await PrepareAsync(lease, forceRefresh: false, cancellationToken);
+                lease.Service.Timeout = MinimumTimeoutMs;
+                await WaitForGateAsync(cancellationToken);
+
+                var created = await SaveNonMimeAsync(lease.Service, item, folder);
+                Interlocked.Increment(ref _written);
+                return new OutputResult(item, true, null, TargetId: created.Id.UniqueId);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (OutputAbortedException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                lastError = Describe(ex);
+                var kind = EwsFailure.Classify(ex);
+
+                if (EwsFailure.HttpStatus(ex) == EwsFailure.Unauthorized && !tokenRefreshed)
+                {
+                    tokenRefreshed = true;
+                    await PrepareAsync(lease, forceRefresh: true, cancellationToken);
+                    continue;
+                }
+
+                switch (kind)
+                {
+                    case EwsFailureKind.AbortMailbox:
+                    case EwsFailureKind.AbortRun:
+                        throw new OutputAbortedException(AbortMessage(lease, ex), kind == EwsFailureKind.AbortRun, ex);
+                    case EwsFailureKind.Permanent:
+                        return Failed(item, lastError, retryable: false);
+                    case EwsFailureKind.Ambiguous:
+                        mayExist = true;
+                        break;
+                }
+
+                await WaitAfterFailureAsync(ex, kind, attempt, cancellationToken);
+            }
+        }
+
+        return Failed(item, lastError ?? "Nicht übertragen.", retryable: true);
+    }
+
+    private async Task<Item> SaveNonMimeAsync(ExchangeService service, OutputItem item, FolderId folder)
+    {
+        switch (item.Kind)
+        {
+            case "calendar":
+                var appointment = CreateAppointment(service, item);
+                // Migrierte Termine dürfen nie Einladungen an echte Personen auslösen.
+                await appointment.Save(folder, SendInvitationsMode.SendToNone);
+                return appointment;
+            case "contact":
+                var contact = CreateContact(service, item);
+                await contact.Save(folder);
+                return contact;
+            default:
+                var task = CreateTask(service, item);
+                await task.Save(folder);
+                return task;
+        }
+    }
+
+    private Appointment CreateAppointment(ExchangeService service, OutputItem item)
+    {
+        var rawStart = GetDate(item, "StartTime") ?? item.ReceivedLocal ?? DateTime.Now;
+        var rawEnd = GetDate(item, "StopTime") ?? rawStart.AddMinutes(30);
+        var start = ToValidWallClock(rawStart);
+        var end = ToValidWallClock(rawEnd);
+        if (end < start)
+        {
+            // Die Verschiebung aus der Zeitumstellungslücke darf das Ende nicht vor den Beginn legen.
+            end = start + (rawEnd > rawStart ? rawEnd - rawStart : TimeSpan.Zero);
+        }
+
         var html = GetText(item, "BodyHtml");
 
-        var appointment = new Appointment(_service!)
+        var appointment = new Appointment(service)
         {
             Subject = item.Subject ?? "(Termin)",
             Body = string.IsNullOrWhiteSpace(html)
-                ? new MessageBody(BodyType.Text, body)
+                ? new MessageBody(BodyType.Text, GetText(item, "BodyText") ?? "")
                 : new MessageBody(BodyType.HTML, html),
-            Start = DateTime.SpecifyKind(start, DateTimeKind.Unspecified),
-            End = DateTime.SpecifyKind(end, DateTimeKind.Unspecified),
+            Start = start,
+            End = end,
             Location = GetText(item, "Location") ?? "",
             IsAllDayEvent = GetBool(item, "AllDayEvent") == true,
             IsReminderSet = false
         };
 
-        appointment.SetExtendedProperty(ItemKeyProperty, BuildItemKey(item));
-        try
-        {
-            await SaveWithRetryAsync(
-                () => appointment.Save(folder.Id),
-                cancellationToken);
-        }
-        catch (ServiceResponseException)
-        {
-            var calendarRoot = await BindWellKnownAsync(
-                WellKnownFolderName.Calendar,
-                cancellationToken);
-            if (folder.Id.UniqueId == calendarRoot.Id.UniqueId)
-            {
-                throw;
-            }
-
-            await SaveWithRetryAsync(
-                () => appointment.Save(calendarRoot.Id),
-                cancellationToken);
-        }
-
-        _written++;
+        appointment.SetExtendedProperty(ItemKeyProperty, TargetKey(item));
+        return appointment;
     }
 
-    private async Task CreateContactAsync(
-        OutputItem item,
-        Folder folder,
-        CancellationToken cancellationToken)
+    private Contact CreateContact(ExchangeService service, OutputItem item)
     {
-        if (item.CheckExisting &&
-            await ExistsByItemKeyAsync(item, folder, cancellationToken))
-        {
-            Interlocked.Increment(ref _alreadyPresent);
-            return;
-        }
+        var displayName = GetText(item, "DisplayName") ?? item.Subject ?? "(Kontakt)";
 
-        var displayName = GetText(item, "DisplayName")
-                          ?? item.Subject
-                          ?? "(Kontakt)";
-
-        var contact = new Contact(_service!)
+        var contact = new Contact(service)
         {
             DisplayName = displayName,
             GivenName = GetText(item, "FirstName") ?? "",
@@ -644,96 +805,36 @@ public sealed class EwsOutputTarget : IOutputTarget
             contact.PhoneNumbers[PhoneNumberKey.MobilePhone] = mobile;
         }
 
-        var notes = GetText(item, "BodyText");
         var html = GetText(item, "BodyHtml");
         contact.Body = string.IsNullOrWhiteSpace(html)
-            ? new MessageBody(BodyType.Text, notes ?? "")
+            ? new MessageBody(BodyType.Text, GetText(item, "BodyText") ?? "")
             : new MessageBody(BodyType.HTML, html);
 
-        contact.SetExtendedProperty(ItemKeyProperty, BuildItemKey(item));
-        try
-        {
-            await SaveWithRetryAsync(
-                () => contact.Save(folder.Id),
-                cancellationToken);
-        }
-        catch (ServiceResponseException)
-        {
-            var contactsRoot = await BindWellKnownAsync(
-                WellKnownFolderName.Contacts,
-                cancellationToken);
-            if (folder.Id.UniqueId == contactsRoot.Id.UniqueId)
-            {
-                throw;
-            }
-
-            await SaveWithRetryAsync(
-                () => contact.Save(contactsRoot.Id),
-                cancellationToken);
-        }
-
-        _written++;
+        contact.SetExtendedProperty(ItemKeyProperty, TargetKey(item));
+        return contact;
     }
 
-    private async Task CreateTaskAsync(
-        OutputItem item,
-        Folder folder,
-        CancellationToken cancellationToken)
+    private EwsTask CreateTask(ExchangeService service, OutputItem item)
     {
-        if (item.CheckExisting &&
-            await ExistsByItemKeyAsync(item, folder, cancellationToken))
-        {
-            Interlocked.Increment(ref _alreadyPresent);
-            return;
-        }
-
-        var body = GetText(item, "BodyText") ?? "";
         var html = GetText(item, "BodyHtml");
-        var start = GetDate(item, "StartTime");
-        var due = GetDate(item, "DueDate") ?? GetDate(item, "StopTime");
-        var status = GetText(item, "Status");
-        var priority = GetText(item, "Priority");
-        var percent = GetInt(item, "PercentComplete");
-        var completed = GetBool(item, "Completed") == true ||
-                        GetBool(item, "IsComplete") == true;
+        var completed = GetBool(item, "Completed") == true || GetBool(item, "IsComplete") == true;
 
-        var task = new EwsTask(_service!)
+        var task = new EwsTask(service)
         {
             Subject = item.Subject ?? "(Aufgabe)",
             Body = string.IsNullOrWhiteSpace(html)
-                ? new MessageBody(BodyType.Text, body)
+                ? new MessageBody(BodyType.Text, GetText(item, "BodyText") ?? "")
                 : new MessageBody(BodyType.HTML, html),
-            StartDate = start,
-            DueDate = due,
-            Status = completed ? EwsTaskStatus.Completed : MapTaskStatus(status),
-            Importance = MapImportance(priority),
-            PercentComplete = percent ?? (completed ? 100 : 0),
+            StartDate = GetDate(item, "StartTime") is { } startDate ? ToValidWallClock(startDate) : null,
+            DueDate = (GetDate(item, "DueDate") ?? GetDate(item, "StopTime")) is { } dueDate ? ToValidWallClock(dueDate) : null,
+            Status = completed ? EwsTaskStatus.Completed : MapTaskStatus(GetText(item, "Status")),
+            Importance = MapImportance(GetText(item, "Priority")),
+            PercentComplete = GetInt(item, "PercentComplete") ?? (completed ? 100 : 0),
             IsReminderSet = false
         };
 
-        task.SetExtendedProperty(ItemKeyProperty, BuildItemKey(item));
-        try
-        {
-            await SaveWithRetryAsync(
-                () => task.Save(folder.Id),
-                cancellationToken);
-        }
-        catch (ServiceResponseException)
-        {
-            var tasksRoot = await BindWellKnownAsync(
-                WellKnownFolderName.Tasks,
-                cancellationToken);
-            if (folder.Id.UniqueId == tasksRoot.Id.UniqueId)
-            {
-                throw;
-            }
-
-            await SaveWithRetryAsync(
-                () => task.Save(tasksRoot.Id),
-                cancellationToken);
-        }
-
-        _written++;
+        task.SetExtendedProperty(ItemKeyProperty, TargetKey(item));
+        return task;
     }
 
     private static EwsTaskStatus MapTaskStatus(string? status)
@@ -758,22 +859,28 @@ public sealed class EwsOutputTarget : IOutputTarget
         };
     }
 
-    private static int? GetInt(OutputItem item, string key)
-    {
-        var text = GetText(item, key);
-        return int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value)
-            ? value
-            : null;
-    }
-
-    private async Task<Folder> GetTargetFolderAsync(
-        OutputItem item,
-        CancellationToken cancellationToken)
+    private async Task<FolderId> GetTargetFolderAsync(OutputItem item, CancellationToken cancellationToken)
     {
         await _folderLock.WaitAsync(cancellationToken);
         try
         {
-            return await GetTargetFolderCoreAsync(item, cancellationToken);
+            var (root, subfolders, folderClass) = ResolveTarget(item);
+            var current = await BindWellKnownAsync(root, cancellationToken);
+            var accumulated = root.ToString();
+
+            foreach (var segment in subfolders)
+            {
+                accumulated += "/" + segment;
+                if (!_folderCache.TryGetValue(accumulated, out var next))
+                {
+                    next = await EnsureSubfolderAsync(current, segment, folderClass, cancellationToken);
+                    _folderCache[accumulated] = next;
+                }
+
+                current = next;
+            }
+
+            return current;
         }
         finally
         {
@@ -781,419 +888,348 @@ public sealed class EwsOutputTarget : IOutputTarget
         }
     }
 
-    private async Task<Folder> GetTargetFolderCoreAsync(
-        OutputItem item,
-        CancellationToken cancellationToken)
+    /// <summary>
+    /// Das erste Pfadsegment ist der technische Wurzelschlüssel aus dem David-Baum, alle
+    /// weiteren sind Anzeigenamen. Damit kann ein Benutzerordner namens "Ausgang" unter dem
+    /// Eingang nie zu Gesendete Elemente werden.
+    /// </summary>
+    internal static (WellKnownFolderName Root, IReadOnlyList<string> Subfolders, string? FolderClass) ResolveTarget(OutputItem item)
     {
-        var segments = SanitizeSegments(item.FolderPath);
-
-        if (item.Kind == "calendar")
+        var segments = item.FolderPath
+            .Replace('\\', '/')
+            .Split('/', StringSplitOptions.RemoveEmptyEntries)
+            .ToList();
+        var hasRoot = segments.Count > 0 && FolderMapping.TryMapRoot(segments[0], out _);
+        var mapped = WellKnownFolderName.Inbox;
+        if (hasRoot)
         {
-            var calendar = await BindWellKnownAsync(
-                WellKnownFolderName.Calendar,
-                cancellationToken);
-            return await EnsureSubfoldersAsync(
-                calendar,
-                RemoveRoot(segments, "cal", "calendar", "kalender"),
-                "calendar",
-                cancellationToken,
-                "IPF.Appointment");
+            FolderMapping.TryMapRoot(segments[0], out mapped);
         }
 
-        if (item.Kind == "contact")
+        var named = segments.Skip(hasRoot ? 1 : 0).Select(SanitizeFolderName).ToList();
+
+        // Gelöschte Termine, Kontakte und Aufgaben dürfen nicht im Live-Ordner auftauchen.
+        // Direkt nach DeletedItems oder JunkEmail lassen sie sich per CreateItem nicht anlegen.
+        var holdingFolder = mapped switch
         {
-            var contacts = await BindWellKnownAsync(
-                WellKnownFolderName.Contacts,
-                cancellationToken);
-            return await EnsureSubfoldersAsync(
-                contacts,
-                RemoveRoot(segments, "address", "addresses", "contacts", "adressen", "kontakte"),
-                "contacts",
-                cancellationToken,
-                "IPF.Contact");
+            WellKnownFolderName.DeletedItems => "David-Papierkorb",
+            WellKnownFolderName.JunkEmail => "David-Spam",
+            WellKnownFolderName.Drafts => "David-Entwürfe",
+            _ => null
+        };
+        if (holdingFolder is not null && item.Kind is "calendar" or "contact" or "task")
+        {
+            named.Insert(0, holdingFolder);
         }
 
-        if (item.Kind == "task")
+        switch (item.Kind)
         {
-            var tasks = await BindWellKnownAsync(
-                WellKnownFolderName.Tasks,
-                cancellationToken);
-            return await EnsureSubfoldersAsync(
-                tasks,
-                RemoveRoot(segments, "todo", "tasks", "aufgaben"),
-                "tasks",
-                cancellationToken,
-                "IPF.Task");
+            case "calendar":
+                return (WellKnownFolderName.Calendar, named, "IPF.Appointment");
+            case "contact":
+                return (WellKnownFolderName.Contacts, named, "IPF.Contact");
+            case "task":
+                return (WellKnownFolderName.Tasks, named, "IPF.Task");
         }
 
-        var inbox = await BindWellKnownAsync(
-            WellKnownFolderName.Inbox,
-            cancellationToken);
-
-        // Die Wurzel zusätzlich aus dem echten David-Archivpfad bestimmen.
-        // Das schützt gegen falsche/leere FolderPath-Werte aus alten Manifesten.
-        var archiveRoot = FindArchiveRoot(item.ArchivePath);
-        if (archiveRoot is not null)
-        {
-            var root = await BindWellKnownAsync(archiveRoot.Value, cancellationToken);
-            var subSegments = segments.ToList();
-            while (subSegments.Count > 0 &&
-                   TryMapMailRoot(subSegments[0], out _))
-            {
-                subSegments.RemoveAt(0);
-            }
-
-            return await EnsureSubfoldersAsync(
-                root,
-                subSegments,
-                archiveRoot.Value.ToString(),
-                cancellationToken);
-        }
-
-        if (segments.Count == 0)
-        {
-            return inbox;
-        }
-
-        if (TryMapMailRoot(segments[0], out var mapped))
-        {
-            var root = await BindWellKnownAsync(mapped, cancellationToken);
-            return await EnsureSubfoldersAsync(
-                root,
-                segments.Skip(1).ToList(),
-                mapped.ToString(),
-                cancellationToken);
-        }
-
-        // Unbekannte David-Wurzel (z. B. Unverteilt): unter Inbox einsortieren.
-        return await EnsureSubfoldersAsync(
-            inbox,
-            segments,
-            "Inbox",
-            cancellationToken);
+        return mapped is WellKnownFolderName.Calendar or WellKnownFolderName.Contacts or WellKnownFolderName.Tasks
+            ? (WellKnownFolderName.Inbox, segments.Select(SanitizeFolderName).ToList(), null)
+            : (mapped, named, null);
     }
 
-    private async Task<Folder> EnsureSubfoldersAsync(
-        Folder root,
-        IReadOnlyList<string> segments,
-        string cachePrefix,
-        CancellationToken cancellationToken,
-        string? folderClass = null)
+    private async Task<FolderId> EnsureSubfolderAsync(
+        FolderId parent,
+        string name,
+        string? folderClass,
+        CancellationToken cancellationToken)
     {
-        if (_service is null)
+        var lease = _folderLease!;
+        var found = await FindSubfolderAsync(lease, parent, name, cancellationToken);
+        if (found is not null)
         {
-            throw new InvalidOperationException("EwsOutputTarget wurde nicht geöffnet.");
+            return found;
         }
 
-        var current = root;
-        var accumulated = cachePrefix;
-
-        foreach (var segment in segments)
-        {
-            accumulated += "/" + segment;
-            if (_folderCache.TryGetValue(accumulated, out var cached))
+        return await CallAsync(
+            lease,
+            async service =>
             {
-                current = cached;
-                continue;
-            }
-
-            var filter = new SearchFilter.IsEqualTo(FolderSchema.DisplayName, segment);
-            var view = new FolderView(10) { Traversal = FolderTraversal.Shallow };
-            var found = await _service.FindFolders(current.Id, filter, view);
-
-            Folder folder;
-            if (found.Folders.Count > 0)
-            {
-                folder = found.Folders[0];
-            }
-            else
-            {
-                folder = new Folder(_service) { DisplayName = segment };
+                var folder = new Folder(service) { DisplayName = name };
                 if (!string.IsNullOrWhiteSpace(folderClass))
                 {
                     folder.FolderClass = folderClass;
                 }
 
-                await folder.Save(current.Id);
-            }
-
-            _folderCache[accumulated] = folder;
-            current = folder;
-        }
-
-        return current;
+                try
+                {
+                    await folder.Save(parent);
+                    return folder.Id;
+                }
+                catch (ServiceResponseException ex) when (ex.ErrorCode == ServiceError.ErrorFolderExists)
+                {
+                    // Nach einem Timeout kann der erste Versuch den Ordner bereits angelegt haben.
+                    return await FindSubfolderAsync(lease, parent, name, cancellationToken) ?? throw ex;
+                }
+            },
+            cancellationToken);
     }
 
-    private async Task<Folder> BindWellKnownAsync(
-        WellKnownFolderName name,
+    private async Task<FolderId?> FindSubfolderAsync(
+        ServiceLease lease,
+        FolderId parent,
+        string name,
         CancellationToken cancellationToken)
     {
-        if (_service is null)
-        {
-            throw new InvalidOperationException("EwsOutputTarget wurde nicht geöffnet.");
-        }
+        var view = new FolderView(2) { Traversal = FolderTraversal.Shallow };
+        var result = await CallAsync(
+            lease,
+            service => service.FindFolders(parent, new SearchFilter.IsEqualTo(FolderSchema.DisplayName, name), view),
+            cancellationToken);
+        return result.Folders.Count > 0 ? result.Folders[0].Id : null;
+    }
 
+    private async Task<FolderId> BindWellKnownAsync(WellKnownFolderName name, CancellationToken cancellationToken)
+    {
         if (_wellKnownFolders.TryGetValue(name, out var cached))
         {
             return cached;
         }
 
-        var folder = await Folder.Bind(_service, name);
-        _wellKnownFolders[name] = folder;
-        return folder;
+        var folder = await CallAsync(_folderLease!, service => Folder.Bind(service, name), cancellationToken);
+        _wellKnownFolders[name] = folder.Id;
+        return folder.Id;
     }
 
-    private static List<string> SanitizeSegments(string folderPath)
+    /// <summary>Lesender oder idempotenter Aufruf mit Wiederholung bei vorübergehenden Fehlern.</summary>
+    private async Task<T> CallAsync<T>(
+        ServiceLease lease,
+        Func<ExchangeService, Task<T>> call,
+        CancellationToken cancellationToken)
     {
-        return folderPath
-            .Replace('\\', '/')
-            .Split('/', StringSplitOptions.RemoveEmptyEntries)
-            .Select(SanitizeFolderName)
-            .ToList();
-    }
-
-    private static List<string> RemoveRoot(List<string> segments, params string[] roots)
-    {
-        if (segments.Count == 0)
+        var tokenRefreshed = false;
+        for (var attempt = 0; ; attempt++)
         {
-            return segments;
-        }
+            await PrepareAsync(lease, forceRefresh: false, cancellationToken);
+            lease.Service.Timeout = MinimumTimeoutMs;
+            await WaitForGateAsync(cancellationToken);
 
-        return roots.Any(root => segments[0].Equals(root, StringComparison.OrdinalIgnoreCase))
-            ? segments.Skip(1).ToList()
-            : segments;
-    }
-
-    private static WellKnownFolderName? FindArchiveRoot(string archivePath)
-    {
-        foreach (var segment in archivePath
-                     .Replace('/', '\\')
-                     .Split('\\', StringSplitOptions.RemoveEmptyEntries))
-        {
-            if (TryMapMailRoot(segment, out var folder))
+            try
             {
-                return folder;
+                return await call(lease.Service);
             }
-        }
-
-        return null;
-    }
-
-    private static bool TryMapMailRoot(string segment, out WellKnownFolderName folder)
-    {
-        switch (segment.ToLowerInvariant())
-        {
-            case "in":
-            case "inbox":
-            case "eingang":
-                folder = WellKnownFolderName.Inbox;
-                return true;
-            case "out":
-            case "sent":
-            case "sentitems":
-            case "ausgang":
-            case "gesendet":
-                folder = WellKnownFolderName.SentItems;
-                return true;
-            case "draft":
-            case "drafts":
-            case "entwurf":
-            case "entwürfe":
-                folder = WellKnownFolderName.Drafts;
-                return true;
-            case "trash":
-            case "deleted":
-            case "deleteditems":
-            case "gelöscht":
-            case "papierkorb":
-                folder = WellKnownFolderName.DeletedItems;
-                return true;
-            case "spam":
-            case "junk":
-            case "junkemail":
-                folder = WellKnownFolderName.JunkEmail;
-                return true;
-            case "cal":
-            case "calendar":
-            case "kalender":
-                folder = WellKnownFolderName.Calendar;
-                return true;
-            case "address":
-            case "contacts":
-            case "adressen":
-            case "kontakte":
-                folder = WellKnownFolderName.Contacts;
-                return true;
-            case "todo":
-            case "tasks":
-            case "aufgaben":
-                folder = WellKnownFolderName.Tasks;
-                return true;
-            default:
-                folder = WellKnownFolderName.Inbox;
-                return false;
-        }
-    }
-
-    private async Task<bool> ExistsByItemKeyAsync(
-        OutputItem item,
-        Folder folder,
-        CancellationToken cancellationToken,
-        ExchangeService? service = null)
-    {
-        return await FindAsync(
-            new SearchFilter.IsEqualTo(ItemKeyProperty, BuildItemKey(item)),
-            folder,
-            cancellationToken,
-            service);
-    }
-
-    private async Task<bool> EnsureMessageInFolderAsync(
-        string messageId,
-        Folder intendedFolder,
-        CancellationToken cancellationToken,
-        ExchangeService? service = null)
-    {
-        var exchange = service ?? _service;
-        if (exchange is null)
-        {
-            throw new InvalidOperationException("EwsOutputTarget wurde nicht geöffnet.");
-        }
-
-        var root = await Folder.Bind(exchange, WellKnownFolderName.MsgFolderRoot);
-        var folderView = new FolderView(1000)
-        {
-            Traversal = FolderTraversal.Deep,
-            PropertySet = new PropertySet(BasePropertySet.IdOnly)
-        };
-        var folders = await exchange.FindFolders(root.Id, folderView);
-        var filter = new SearchFilter.IsEqualTo(
-            EmailMessageSchema.InternetMessageId,
-            messageId);
-
-        foreach (var folder in folders.Folders)
-        {
-            var items = await exchange.FindItems(
-                folder.Id,
-                filter,
-                new ItemView(10));
-
-            foreach (var item in items.Items)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                if (folder.Id.UniqueId == intendedFolder.Id.UniqueId)
+                throw;
+            }
+            catch (Exception ex)
+            {
+                if (EwsFailure.HttpStatus(ex) == EwsFailure.Unauthorized && !tokenRefreshed)
                 {
-                    return true;
+                    tokenRefreshed = true;
+                    await PrepareAsync(lease, forceRefresh: true, cancellationToken);
+                    continue;
                 }
 
-                await item.Move(intendedFolder.Id);
-                return true;
+                var kind = EwsFailure.Classify(ex);
+                if (kind is EwsFailureKind.AbortMailbox or EwsFailureKind.AbortRun)
+                {
+                    throw new OutputAbortedException(AbortMessage(lease, ex), kind == EwsFailureKind.AbortRun, ex);
+                }
+
+                if (kind == EwsFailureKind.Permanent || attempt + 1 >= MaxAttempts)
+                {
+                    throw;
+                }
+
+                await BackOffAsync(ex, attempt, cancellationToken);
             }
         }
-
-        return false;
     }
 
-    private async Task<bool> ExistsWithRetryAsync(
-        string messageId,
-        Folder folder,
-        CancellationToken cancellationToken,
-        ExchangeService? service = null)
+    private async Task PrepareAsync(ServiceLease lease, bool forceRefresh, CancellationToken cancellationToken)
     {
-        var exchange = service ?? _service;
-        if (exchange is null)
-        {
-            throw new InvalidOperationException("EwsOutputTarget wurde nicht geöffnet.");
-        }
+        var token = await AcquireTokenAsync(forceRefresh, cancellationToken);
 
+        if (!string.Equals(lease.Token, token, StringComparison.Ordinal))
+        {
+            lease.Service.Credentials = new OAuthCredentials(token);
+            lease.Token = token;
+        }
+    }
+
+    private async Task<string> AcquireTokenAsync(bool forceRefresh, CancellationToken cancellationToken)
+    {
         for (var attempt = 0; ; attempt++)
         {
             try
             {
-                var filter = new SearchFilter.IsEqualTo(
-                    EmailMessageSchema.InternetMessageId,
-                    messageId);
-                var view = new ItemView(1)
+                // MSAL liefert aus dem Cache und erneuert kurz vor Ablauf selbst.
+                return await _tokenProvider!(forceRefresh, cancellationToken);
+            }
+            catch (Exception ex) when (EwsFailure.IsTransientTokenFailure(ex) && attempt + 1 < MaxAttempts)
+            {
+                await BackOffAsync(ex, attempt, cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                throw new OutputAbortedException($"Anmeldung an Exchange Online fehlgeschlagen: {ex.Message}", true, ex);
+            }
+        }
+    }
+
+    private string AbortMessage(ServiceLease lease, Exception failure)
+    {
+        var reason = lease.Service.HttpResponseHeaders.TryGetValue(PolicyReasonHeader, out var value)
+            ? $" {value}. EwsEnabled und EwsAllowedAppIDs des Tenants prüfen ('david2exchange setup --check')."
+            : "";
+        return $"{_options.TargetUpn}: {Describe(failure)}{reason}";
+    }
+
+    private async Task WaitForGateAsync(CancellationToken cancellationToken)
+    {
+        // Ein anderer Worker kann die Pause verlängern, während dieser noch wartet.
+        long honoured = 0;
+        while (true)
+        {
+            var resumeAt = Interlocked.Read(ref _resumeAtMilliseconds);
+            var wait = resumeAt - Environment.TickCount64;
+            if (wait <= 0 || resumeAt == honoured)
+            {
+                return;
+            }
+
+            honoured = resumeAt;
+            await _delay(TimeSpan.FromMilliseconds(wait), cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Nach einem Verbindungsfehler kann der Server den Batch noch verarbeiten. Eine sofortige Suche
+    /// fände dann nichts, und das erneute Senden erzeugte Duplikate. Nur dieser Worker wartet.
+    /// </summary>
+    private async Task WaitAfterFailureAsync(Exception failure, EwsFailureKind kind, int attempt, CancellationToken cancellationToken)
+    {
+        await BackOffAsync(failure, attempt, cancellationToken);
+
+        if (kind == EwsFailureKind.Ambiguous && failure is not ServiceResponseException && attempt + 1 < MaxAttempts)
+        {
+            await _delay(ServerSettleTime, cancellationToken);
+        }
+    }
+
+    private Task BackOffAsync(Exception failure, int attempt, CancellationToken cancellationToken)
+    {
+        return BackOffAsync(EwsFailure.ServerBackOff(failure), attempt, cancellationToken);
+    }
+
+    /// <summary>
+    /// Eine Server-Vorgabe gilt für alle Worker: Drosselung trifft das ganze Postfach, und
+    /// Weitersenden würde sie nur verlängern. Eine eigene Wartezeit gilt nur für diesen Versuch.
+    /// </summary>
+    private async Task BackOffAsync(TimeSpan? serverBackOff, int attempt, CancellationToken cancellationToken)
+    {
+        if (serverBackOff is { } hint)
+        {
+            var capped = hint > MaximumServerBackOff ? MaximumServerBackOff : hint;
+            var resumeAt = Environment.TickCount64 + (long)capped.TotalMilliseconds;
+            long seen;
+            while (resumeAt > (seen = Interlocked.Read(ref _resumeAtMilliseconds)))
+            {
+                if (Interlocked.CompareExchange(ref _resumeAtMilliseconds, resumeAt, seen) == seen)
                 {
-                    PropertySet = new PropertySet(BasePropertySet.IdOnly)
-                };
-
-                var result = await exchange.FindItems(folder.Id, filter, view);
-                return result.Items.Count > 0;
+                    break;
+                }
             }
-            catch (Exception ex) when (
-                attempt < MaxRetries &&
-                IsTransientEwsError(ex) &&
-                !cancellationToken.IsCancellationRequested)
+
+            Console.Error.WriteLine($"  EWS-Drosselung: Server verlangt {capped.TotalSeconds:F0} s Pause.");
+
+            // Die Pause gilt über das Tor für alle; nach dem letzten Versuch wartet niemand mehr.
+            if (attempt + 1 < MaxAttempts)
             {
-                var delay = GetRetryDelay(ex, attempt);
-                await Task.Delay(delay, cancellationToken);
+                await _delay(capped, cancellationToken);
             }
+
+            return;
         }
+
+        if (attempt + 1 >= MaxAttempts)
+        {
+            return;
+        }
+
+        var exponential = TimeSpan.FromSeconds(Math.Min(MaximumRetryDelay.TotalSeconds, Math.Pow(2, attempt)));
+        await _delay(exponential + TimeSpan.FromMilliseconds(Random.Shared.Next(0, 500)), cancellationToken);
     }
 
-    private async Task<bool> ExistsAsync(
-        string messageId,
-        Folder folder,
-        CancellationToken cancellationToken,
-        ExchangeService? service = null)
+    private static int TimeoutFor(long bytes)
     {
-        return await FindAsync(
-            new SearchFilter.IsEqualTo(EmailMessageSchema.InternetMessageId, messageId),
-            folder,
-            cancellationToken,
-            service);
+        var milliseconds = 60_000 + (bytes / BytesPerSecondAssumed * 1000);
+        return (int)Math.Clamp(milliseconds, MinimumTimeoutMs, MaximumTimeoutMs);
     }
 
-    private async Task<bool> FindAsync(
-        SearchFilter filter,
-        Folder folder,
-        CancellationToken cancellationToken,
-        ExchangeService? service = null)
+    private static bool IsRetryable(Exception exception)
     {
-        var exchange = service ?? _service;
-        if (exchange is null)
-        {
-            return false;
-        }
-
-        try
-        {
-            var view = new ItemView(1)
-            {
-                PropertySet = new PropertySet(BasePropertySet.IdOnly)
-            };
-
-            var result = await exchange.FindItems(folder.Id, filter, view);
-            return result.Items.Count > 0;
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"  EWS-Dedupe nicht verfügbar: {ex.Message}");
-            return false;
-        }
+        return exception is not OutputAbortedException and not OperationCanceledException;
     }
 
-    private static string BuildItemKey(OutputItem item)
+    private static bool IsItemLevelFailure(Exception exception)
     {
-        return $"{item.ArchivePath}|{item.Id}";
+        return exception is not OutputAbortedException and not OperationCanceledException;
+    }
+
+    private static OutputResult Failed(OutputItem item, string error, bool retryable)
+    {
+        return new OutputResult(item, false, error, Retryable: retryable);
+    }
+
+    private static string Describe(Exception exception)
+    {
+        return exception switch
+        {
+            ServiceResponseException response => $"{response.ErrorCode}: {response.Message}",
+            _ => $"{exception.GetType().Name}: {exception.Message}"
+        };
+    }
+
+    private DateTime ToUtc(DateTime local)
+    {
+        return TimeZoneInfo.ConvertTimeToUtc(ToValidWallClock(local), _timeZone);
+    }
+
+    /// <summary>
+    /// Das Manifest liefert Local, gemeint ist die Wanduhrzeit des David-Servers. Eine Zeit in der
+    /// Lücke der Zeitumstellung gibt es nicht, und die EWS Managed API lehnt sie ab.
+    /// </summary>
+    private DateTime ToValidWallClock(DateTime local)
+    {
+        var wallClock = DateTime.SpecifyKind(local, DateTimeKind.Unspecified);
+        return _timeZone.IsInvalidTime(wallClock) ? wallClock.AddHours(1) : wallClock;
+    }
+
+    private static string TargetKey(OutputItem item)
+    {
+        return ItemKeyVersion + (string.IsNullOrWhiteSpace(item.ItemKey) ? $"{item.ArchivePath}|{item.Id}" : item.ItemKey);
     }
 
     private static string? GetText(OutputItem item, string key)
     {
-        return item.Properties.TryGetValue(key, out var value) &&
-               !string.IsNullOrWhiteSpace(value)
+        return item.Properties.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value)
+            ? value
+            : null;
+    }
+
+    private static int? GetInt(OutputItem item, string key)
+    {
+        return int.TryParse(GetText(item, key), NumberStyles.Integer, CultureInfo.InvariantCulture, out var value)
             ? value
             : null;
     }
 
     private static DateTime? GetDate(OutputItem item, string key)
     {
-        var text = GetText(item, key);
-        return DateTime.TryParse(
-            text,
-            CultureInfo.InvariantCulture,
-            DateTimeStyles.RoundtripKind,
-            out var date)
+        // Das OLE-Nulldatum 30.12.1899 bedeutet in David "nicht gesetzt".
+        return DateTime.TryParse(GetText(item, key), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var date) &&
+               date.Year >= 1900
             ? date
             : null;
     }
@@ -1215,13 +1251,11 @@ public sealed class EwsOutputTarget : IOutputTarget
         var builder = new StringBuilder(name.Length);
         foreach (var character in name)
         {
-            builder.Append(invalid.Contains(character) || char.IsControl(character)
-                ? '_'
-                : character);
+            builder.Append(invalid.Contains(character) || char.IsControl(character) ? '_' : character);
         }
 
         var result = builder.ToString().Trim().TrimEnd('.');
-        if (string.IsNullOrWhiteSpace(result) || result is "." or "..")
+        if (string.IsNullOrWhiteSpace(result))
         {
             result = "_";
         }
@@ -1229,32 +1263,39 @@ public sealed class EwsOutputTarget : IOutputTarget
         return result.Length <= 200 ? result : result[..200];
     }
 
-    public Task CompleteAsync(OutputSummary summary, CancellationToken cancellationToken)
+    private ExchangeService CreateService()
     {
-        Console.WriteLine(
-            $"  EWS: {_written} Items importiert, {_alreadyPresent} bereits vorhanden (übersprungen).");
-        return Task.CompletedTask;
+        var service = new ExchangeService(ExchangeVersion.Exchange2013_SP1, _timeZone)
+        {
+            Url = new Uri(_options.EwsUrl),
+            ImpersonatedUserId = new ImpersonatedUserId(ConnectingIdType.SmtpAddress, _options.TargetUpn),
+            Timeout = MinimumTimeoutMs,
+            UserAgent = "david2exchange/" + ToolInfo.Version
+        };
+
+        service.HttpHeaders["X-AnchorMailbox"] = _options.TargetUpn;
+        return service;
     }
 
-    private static string? TryReadMessageId(byte[] eml)
+    private Func<bool, CancellationToken, Task<string>> CreateTokenProvider()
     {
-        var prefix = Encoding.ASCII.GetString(eml, 0, Math.Min(eml.Length, 32_768));
-        var match = Regex.Match(
-            prefix,
-            @"(?im)^Message-ID:\s*(<[^>]+>)",
-            RegexOptions.CultureInvariant);
+        var application = ConfidentialClientApplicationBuilder
+            .Create(_options.ClientId)
+            .WithCertificate(LoadCertificate(_options.CertificateThumbprint))
+            .WithTenantId(_options.TenantId)
 
-        return match.Success ? match.Groups[1].Value.Trim() : null;
-    }
+            // Jedes Postfach hat eine eigene Instanz; ohne geteilten Cache holte jede ein neues Token.
+            .WithCacheOptions(CacheOptions.EnableSharedCacheOptions)
+            .Build();
 
-    public ValueTask DisposeAsync()
-    {
-        _folderCache.Clear();
-        _wellKnownFolders.Clear();
-        _services = Array.Empty<ExchangeService>();
-        _service = null;
-        _folderLock.Dispose();
-        return ValueTask.CompletedTask;
+        return async (forceRefresh, cancellationToken) =>
+        {
+            var result = await application
+                .AcquireTokenForClient(new[] { "https://outlook.office365.com/.default" })
+                .WithForceRefresh(forceRefresh)
+                .ExecuteAsync(cancellationToken);
+            return result.AccessToken;
+        };
     }
 
     private static X509Certificate2 LoadCertificate(string thumbprint)
@@ -1277,5 +1318,33 @@ public sealed class EwsOutputTarget : IOutputTarget
         return certificates[0];
     }
 
+    private sealed class ServiceLease
+    {
+        public ServiceLease(ExchangeService service)
+        {
+            Service = service;
+        }
 
+        public ExchangeService Service { get; }
+
+        public string? Token { get; set; }
+    }
+
+    private sealed class PendingItem
+    {
+        public PendingItem(OutputItem item)
+        {
+            Item = item;
+            MayExist = item.CheckExisting;
+        }
+
+        public OutputItem Item { get; }
+
+        /// <summary>Ein früherer Versuch kann das Item bereits gespeichert haben.</summary>
+        public bool MayExist { get; set; }
+
+        public string? LastError { get; set; }
+    }
+
+    private sealed record SendEntry(PendingItem Pending, EmailMessage Message, long Bytes);
 }

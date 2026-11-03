@@ -50,8 +50,16 @@ public static class UnpackRunner
         foreach (var root in roots)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var archive = session.OpenArchive(root);
-            Recurse(archive, options.DryRun, ref archives, ref changed, ref failed);
+            try
+            {
+                var archive = session.OpenArchive(root);
+                Recurse(archive, archive.ResolvedPath, options.DryRun, ref archives, ref changed, ref failed);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                failed++;
+                Console.Error.WriteLine($"  FEHLER  {root}: {ex.Message}");
+            }
         }
 
         Console.WriteLine();
@@ -73,8 +81,9 @@ public static class UnpackRunner
         return Task.FromResult(failed == 0 ? 0 : 1);
     }
 
-    private static void Recurse(
+    internal static void Recurse(
         IDavidArchive archive,
+        string rootPath,
         bool dryRun,
         ref int archives,
         ref int changed,
@@ -96,9 +105,25 @@ public static class UnpackRunner
             Console.Error.WriteLine($"  FEHLER  {archive.ResolvedPath}: {error}");
         }
 
-        foreach (var child in archive.SubArchives)
+        try
         {
-            Recurse(child, dryRun, ref archives, ref changed, ref failed);
+            // SubArchives ist ein Iterator und wirft erst beim Aufzählen.
+            foreach (var child in archive.SubArchives)
+            {
+                // Verknüpfte Archive wie resource\hol gehören nicht zu diesem Benutzer.
+                if (DavidArchivePaths.IsForeign(child.ResolvedPath, rootPath))
+                {
+                    Console.WriteLine($"  HINWEIS {child.ResolvedPath}: verknüpftes Archiv bleibt unverändert.");
+                    continue;
+                }
+
+                Recurse(child, rootPath, dryRun, ref archives, ref changed, ref failed);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            failed++;
+            Console.Error.WriteLine($"  FEHLER  {archive.ResolvedPath}: Unterarchive nicht lesbar: {ex.Message}");
         }
     }
 }

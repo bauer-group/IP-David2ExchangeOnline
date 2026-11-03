@@ -3,9 +3,11 @@ using System.Text.Json.Serialization;
 
 namespace David2Exchange.Output;
 
+/// <param name="AppendItems">Fortsetzbare Läufe behalten frühere Zeilen; eine Probe beginnt neu.</param>
 public sealed record OutputContext(
     string OutputDirectory,
-    bool DryRun = false);
+    bool DryRun = false,
+    bool AppendItems = false);
 
 public sealed record OutputSettings(
     string Kind,
@@ -14,7 +16,9 @@ public sealed record OutputSettings(
     string TenantId = "",
     string ClientId = "",
     string CertificateThumbprint = "",
-    string FolderName = "David-Migration");
+    string FolderName = "David-Migration",
+    string TimeZone = "Europe/Berlin",
+    int Workers = 8);
 
 public sealed record OutputItem(
     string ArchivePath,
@@ -32,13 +36,18 @@ public sealed record OutputItem(
     IReadOnlyDictionary<string, string?> Properties,
     string Kind = "mail",
     string FolderPath = "",
-    bool CheckExisting = true);
+    bool CheckExisting = true,
+    string ItemKey = "");
 
+/// <param name="Retryable">false bei dauerhaften Fehlern, die ein neuer Versuch nicht behebt.</param>
+/// <param name="TargetId">Kennung des Objekts im Ziel, sofern bekannt.</param>
 public sealed record OutputResult(
     OutputItem Item,
     bool Success,
     string? Error,
-    bool AlreadyPresent = false);
+    bool AlreadyPresent = false,
+    bool Retryable = true,
+    string? TargetId = null);
 
 public sealed record OutputSummary(
     int Items,

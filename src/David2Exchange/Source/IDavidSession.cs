@@ -67,6 +67,15 @@ public interface IDavidItem
 
     bool? IsRead { get; }
 
+    /// <summary>Datei des Items im David-Archiv; Grundlage der stabilen Item-Kennung.</summary>
+    string? SourceFile { get; }
+
+    /// <summary>true = empfangen, false = gesendet, null = unbekannt.</summary>
+    bool? IsReceived { get; }
+
+    /// <summary>Anzahl der Anhänge, sofern David sie ohne teures Aufzählen nennt.</summary>
+    int? AttachmentCount { get; }
+
     IReadOnlyDictionary<string, string?> Properties { get; }
 
     IReadOnlyList<DavidAttachmentInfo> Attachments { get; }
@@ -88,4 +97,5 @@ public sealed record DavidAttachmentInfo(
     string FileName,
     string? FileType,
     string? SourcePath,
-    long? SizeBytes);
+    long? SizeBytes,
+    int Index = 0);

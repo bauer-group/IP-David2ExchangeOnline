@@ -7,4 +7,6 @@ public sealed record EwsOutputOptions(
     string TenantId,
     string ClientId,
     string CertificateThumbprint,
-    string FolderName);
+    string FolderName,
+    string TimeZone = "Europe/Berlin",
+    int Workers = 8);

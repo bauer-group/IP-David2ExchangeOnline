@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 using System.Text;
+using David2Exchange.Cli;
 using David2Exchange.Config;
 using David2Exchange.Infrastructure;
 using David2Exchange.Manifest;
@@ -9,98 +10,138 @@ using David2Exchange.Source.David;
 
 namespace David2Exchange.Runner;
 
+/// <summary>
+/// Migrationsablauf je Postfach. Der Aufrufer-Thread ist der einzige mit Zugriff auf die
+/// David-API (STA, single-threaded): Er liest, exportiert und füllt die Queue. Die Worker der
+/// <see cref="TransferQueue"/> übertragen parallel und kennen nur Manifest und EML-Dateien.
+/// </summary>
 public sealed class MigrationRunner
 {
-    public async Task<int> DiscoverAsync(
-        RunOptions options,
-        IDavidSession? existingSession = null,
-        CancellationToken cancellationToken = default)
+    private const long BytesPerMegabyte = 1024 * 1024;
+    private const string SyntheticAddressDomain = "david.local";
+
+    private static readonly TimeSpan DefaultRetryDelay = TimeSpan.FromSeconds(30);
+
+    public int Discover(RunOptions options)
     {
         var config = ConfigLoader.Load(options.ConfigPath);
         config.Validate(requireM365: false);
         WarnIfFax(config);
 
-        using var manifest = CreateManifest(config);
-        var run = manifest.BeginRun("discover", ToolInfo.Version);
-        var summary = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        IDavidSession? ownedSession = null;
+        using IDavidSession session = new DavidComSession(config.David.ProgId);
+        session.Logon(config.David.Logon);
+        return DiscoverCore(config, options, session);
+    }
+
+    internal static int DiscoverCore(
+        MigrationConfig config,
+        RunOptions options,
+        IDavidSession session,
+        CancellationToken cancellationToken = default)
+    {
+        using var manifest = options.DryRun ? null : CreateManifest(config);
+        manifest?.EnsureCurrentSchema();
+        var run = manifest?.BeginRun("discover", ToolInfo.Version);
+        var failedMailboxes = new List<string>();
 
         try
         {
-            var session = existingSession;
-            if (session is null)
-            {
-                ownedSession = new DavidComSession(config.David.ProgId);
-                session = ownedSession;
-                session.Logon(config.David.Logon);
-            }
-
-            var limit = options.Limit >= 0 ? options.Limit : config.Limits.Limit;
-            if (limit > 0)
-            {
-                Console.WriteLine(
-                    $"HINWEIS: limits.limit={limit} aktiv; nur {limit} Items. " +
-                    "Für alle Items --all verwenden.");
-            }
-
-            var stagingRoot = ConfigLoader.ResolvePath(config, config.Staging.Root);
-            var emlStageRoot = Path.Combine(stagingRoot, "eml-stage");
-            Directory.CreateDirectory(emlStageRoot);
-
+            var limit = EffectiveLimit(config, options);
             foreach (var mailbox in SelectMailboxes(config, options.MailboxId, options.Wave))
             {
-                var archive = session.OpenArchive(mailbox.Source.ArchivePath);
-                var count = 0;
-                foreach (var (item, archivePath, folderPath) in Walk(
-                             archive,
-                             mailbox.ExcludeArchives,
-                             archive.FolderKind))
+                try
                 {
-                    if (limit > 0 && count >= limit)
-                    {
-                        break;
-                    }
-
-                    if (!options.DryRun)
-                    {
-                        var document = ToDocument(mailbox, item, archivePath, folderPath);
-                        manifest.UpsertDiscovered(document);
-
-                        if (options.Prepare)
-                        {
-                            ExportItem(
-                                manifest,
-                                document,
-                                mailbox,
-                                config.David.ArchiveRoot,
-                                item,
-                                archivePath,
-                                folderPath,
-                                document.Key,
-                                Path.Combine(emlStageRoot, mailbox.Id));
-                        }
-                    }
-
-                    count++;
-                    summary[mailbox.Id] = count;
+                    DiscoverMailbox(manifest, session, mailbox, limit, cancellationToken);
                 }
-
-                Console.WriteLine($"  {mailbox.Id}: {count} Items erfasst ({mailbox.Source.ArchivePath})");
+                catch (Exception ex) when (ex is not CliException and not LiteDB.LiteException and not OperationCanceledException)
+                {
+                    // Ein defektes Quellarchiv darf die übrigen Postfächer nicht aufhalten.
+                    failedMailboxes.Add(mailbox.Id);
+                    Console.Error.WriteLine($"POSTFACH FEHLER {mailbox.Id}: {ex.Message}");
+                }
             }
 
-            manifest.FinishRun(run);
-            PrintSummary(manifest.GetSummary(), "discover");
-            return 0;
+            if (manifest is not null && run is not null)
+            {
+                manifest.TryFinishRun(
+                    run,
+                    failedMailboxes.Count == 0 ? null : "Fehlgeschlagen: " + string.Join(", ", failedMailboxes));
+                PrintSummary(manifest.GetSummary(options.MailboxId), "discover");
+            }
+
+            return failedMailboxes.Count == 0 ? 0 : 1;
         }
-        catch (Exception ex)
+        catch (OperationCanceledException)
         {
-            manifest.FinishRun(run, ex.Message);
-            Console.Error.WriteLine($"DISCOVER FEHLER: {ex.Message}");
+            Console.Error.WriteLine("Discover abgebrochen.");
+            if (manifest is not null && run is not null)
+            {
+                manifest.TryFinishRun(run, "Abgebrochen");
+            }
+
             return 2;
         }
-        finally
+        catch (Exception ex) when (ex is not CliException)
         {
-            ownedSession?.Dispose();
+            Console.Error.WriteLine($"DISCOVER FEHLER: {ex}");
+            if (manifest is not null && run is not null)
+            {
+                manifest.TryFinishRun(run, ex.Message);
+            }
+
+            return 2;
+        }
+    }
+
+    private static void DiscoverMailbox(
+        LiteDbManifest? manifest,
+        IDavidSession session,
+        MailboxMapping mailbox,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        var archive = OpenMailboxArchive(session, mailbox);
+        var keys = new ItemKeys(mailbox.Id);
+        var count = 0;
+        var errors = 0;
+
+        foreach (var entry in Walk(archive, mailbox.ExcludeArchives, (path, ex) => errors += ReportArchiveError(path, ex)))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (limit > 0 && count >= limit)
+            {
+                break;
+            }
+
+            try
+            {
+                var (key, isRepeatedFile) = keys.Next(entry);
+                var document = ToDocument(mailbox, entry, key);
+                if (manifest is not null)
+                {
+                    document = manifest.UpsertDiscovered(document);
+                    if (isRepeatedFile)
+                    {
+                        SkipRepeatedFile(manifest, document);
+                        continue;
+                    }
+                }
+
+                count++;
+            }
+            catch (Exception ex) when (ex is not LiteDB.LiteException and not OperationCanceledException)
+            {
+                errors++;
+                Console.Error.WriteLine($"  FEHLER {entry.ArchivePath}: Item nicht lesbar: {ex.Message}");
+            }
+        }
+
+        Console.WriteLine($"  {mailbox.Id}: {count} Items erfasst ({mailbox.Source.ArchivePath})");
+
+        if (errors > 0)
+        {
+            throw new InvalidOperationException($"{errors} Items oder Archive waren nicht lesbar.");
         }
     }
 
@@ -111,96 +152,162 @@ public sealed class MigrationRunner
                          (string.IsNullOrWhiteSpace(config.M365.TenantId) ? "local" : "ews");
         config.Validate(requireM365: outputKind.Equals("ews", StringComparison.OrdinalIgnoreCase));
 
-        var effectiveLimit = options.Limit >= 0 ? options.Limit : config.Limits.Limit;
-
-        var discover = new RunOptions
+        if (options.OutputKind is null && outputKind == "local")
         {
-            ConfigPath = options.ConfigPath,
-            MailboxId = options.MailboxId,
-            Wave = options.Wave,
-            Limit = effectiveLimit,
-            DiscoverOnly = true,
-            Prepare = true,
-            DryRun = options.DryRun
-        };
+            Console.WriteLine(
+                "WARNUNG: m365.tenantId ist leer, deshalb lokale Ausgabe. Es wird nichts nach Exchange übertragen.");
+        }
 
         using IDavidSession session = new DavidComSession(config.David.ProgId);
         session.Logon(config.David.Logon);
 
-        var discoverExit = await DiscoverAsync(discover, session, cancellationToken);
-        if (discoverExit != 0)
-        {
-            return discoverExit;
-        }
-
         if (options.DryRun)
         {
+            var exitCode = DiscoverCore(config, options, session, cancellationToken);
             Console.WriteLine("Dry-Run: Es wurden keine Manifest-Items und keine Zielobjekte geschrieben.");
-            return 0;
+            return exitCode;
         }
 
+        return await RunCoreAsync(
+            config,
+            options,
+            session,
+            mailbox => OutputTargetFactory.Create(new OutputSettings(
+                outputKind,
+                mailbox.Target.Upn,
+                config.M365.EwsUrl,
+                config.M365.TenantId,
+                config.M365.ClientId,
+                config.M365.CertThumbprint,
+                config.M365.EwsFolder,
+                config.David.Timezone,
+                config.Limits.Workers)),
+            DefaultRetryDelay,
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Exit-Codes: 0 = alles übertragen, 1 = fertig, aber Items oder Postfächer sind
+    /// fehlgeschlagen, 2 = Lauf abgebrochen.
+    /// </summary>
+    internal static async Task<int> RunCoreAsync(
+        MigrationConfig config,
+        RunOptions options,
+        IDavidSession session,
+        Func<MailboxMapping, IOutputTarget> outputFactory,
+        TimeSpan retryDelay,
+        CancellationToken cancellationToken)
+    {
+        WarnIfFax(config);
+
+        if (!options.Newest)
+        {
+            Console.WriteLine(
+                "HINWEIS: --oldest wird nicht unterstützt. Items laufen in der David-Reihenfolge (neueste zuerst), " +
+                "damit das Postfach nicht komplett in den Speicher muss.");
+        }
+
+        var mailboxes = SelectMailboxes(config, options.MailboxId, options.Wave);
+
         using var manifest = CreateManifest(config);
-        CleanupImportedStaging(manifest);
+        manifest.EnsureCurrentSchema();
         var run = manifest.BeginRun("run", ToolInfo.Version);
+        var failedMailboxes = new List<string>();
+        var limit = EffectiveLimit(config, options);
 
         try
         {
-            var stagingRoot = ConfigLoader.ResolvePath(config, config.Staging.Root);
-            var outputRoot = Path.Combine(stagingRoot, "output");
-
-            await ImportQueueAsync(
-                config,
-                manifest,
-                options,
-                outputKind,
-                outputRoot,
-                run.StartedUtc,
-                cancellationToken);
-
-            manifest.FinishRun(run);
-            PrintSummary(manifest.GetSummary(options.MailboxId), "run");
-            PrintSkippedReasons(manifest, options.MailboxId);
-            return 0;
+            foreach (var mailbox in mailboxes)
+            {
+                try
+                {
+                    await MigrateMailboxAsync(
+                        config,
+                        manifest,
+                        session,
+                        mailbox,
+                        outputFactory,
+                        limit,
+                        retryDelay,
+                        cancellationToken);
+                }
+                catch (Exception ex) when (ex is not OutputAbortedException { AffectsAllMailboxes: true } and not OperationCanceledException)
+                {
+                    // Ein defektes Quellarchiv darf die übrigen Postfächer nicht aufhalten.
+                    failedMailboxes.Add(mailbox.Id);
+                    Console.Error.WriteLine($"POSTFACH FEHLER {mailbox.Id}: {ex}");
+                }
+            }
         }
         catch (Exception ex)
         {
-            manifest.FinishRun(run, ex.Message);
-            Console.Error.WriteLine($"RUN FEHLER: {ex.Message}");
+            Console.Error.WriteLine($"RUN ABGEBROCHEN: {ex}");
+            manifest.TryFinishRun(run, ex.Message);
+            PrintSummary(manifest.GetSummary(options.MailboxId), "run (abgebrochen)");
             return 2;
         }
+
+        manifest.TryFinishRun(
+            run,
+            failedMailboxes.Count == 0 ? null : "Fehlgeschlagen: " + string.Join(", ", failedMailboxes));
+
+        var summary = manifest.GetSummary(options.MailboxId);
+        PrintSummary(summary, "run");
+        PrintSkippedReasons(manifest, options.MailboxId);
+        return failedMailboxes.Count > 0 || summary.Failed > 0 ? 1 : 0;
     }
 
     public int Verify(RunOptions options)
     {
-        var config = ConfigLoader.Load(options.ConfigPath);
+        return VerifyCore(ConfigLoader.Load(options.ConfigPath), options);
+    }
+
+    /// <summary>
+    /// Ohne --output zählt nur Exchange: Ein lokaler Testlauf ist keine abgeschlossene Migration.
+    /// </summary>
+    internal static int VerifyCore(MigrationConfig config, RunOptions options)
+    {
         using var manifest = CreateManifest(config);
 
+        var kind = OutputTargetFactory.CanonicalKind(options.OutputKind ?? "ews");
         var boxes = SelectMailboxes(config, options.MailboxId, options.Wave).ToList();
         var totalImported = 0;
+        var totalElsewhere = 0;
         var totalFailed = 0;
         var totalOpen = 0;
         var totalItems = 0;
+        var incompleteWalks = new List<string>();
 
-        Console.WriteLine($"{"Postfach",-28} {"importiert",10} {"failed",7} {"offen",7} {"skipped",8}");
-        Console.WriteLine(new string('-', 70));
+        Console.WriteLine($"Ziel: {kind}");
+        Console.WriteLine($"{"Postfach",-28} {"importiert",10} {"anderes Ziel",13} {"failed",7} {"offen",7} {"skipped",8}");
+        Console.WriteLine(new string('-', 84));
 
         foreach (var mailbox in boxes)
         {
             var summary = manifest.GetSummary(mailbox.Id);
+            var elsewhere = manifest.CountImportedElsewhere(
+                mailbox.Id,
+                OutputTargetFactory.TargetName(kind, mailbox.Target.Upn));
+            var imported = summary.Imported - elsewhere;
             var open = summary.Discovered + summary.Exported + summary.Importing;
-            totalImported += summary.Imported;
+            totalImported += imported;
+            totalElsewhere += elsewhere;
             totalFailed += summary.Failed;
             totalOpen += open;
             totalItems += summary.Total;
+            if (!manifest.HasCompleteWalk(mailbox.Id, mailbox.Source.ArchivePath))
+            {
+                incompleteWalks.Add(mailbox.Id);
+            }
 
             Console.WriteLine(
-                $"{mailbox.Id,-28} {summary.Imported,10} {summary.Failed,7} {open,7} {summary.Skipped,8}");
+                $"{mailbox.Id,-28} {imported,10} {elsewhere,13} {summary.Failed,7} {open,7} {summary.Skipped,8}");
         }
 
         Console.WriteLine();
         Console.WriteLine(
             $"Wave: {options.Wave ?? "alle"} · importiert={totalImported} " +
-            $"failed={totalFailed} offen={totalOpen}");
+            $"anderes Ziel={totalElsewhere} failed={totalFailed} offen={totalOpen}");
 
         if (totalItems == 0)
         {
@@ -217,8 +324,30 @@ public sealed class MigrationRunner
             return 1;
         }
 
+        if (totalElsewhere > 0)
+        {
+            Console.Error.WriteLine(
+                $"VERIFY FAILED: {totalElsewhere} Items wurden in ein anderes Ziel übertragen als '{kind}' " +
+                "(lokaler Testlauf oder geändertes Zielpostfach). 'run' für dieses Ziel ausführen.");
+            return 1;
+        }
+
+        if (incompleteWalks.Count > 0)
+        {
+            Console.Error.WriteLine(
+                "VERIFY FAILED: Der letzte Lauf hat diese Postfächer nicht vollständig gelesen " +
+                "(Limit, Lesefehler, Abbruch) oder die Quelle wurde geändert: " +
+                string.Join(", ", incompleteWalks) + ". 'run --all' ausführen.");
+            return 1;
+        }
+
         PrintSkippedReasons(manifest, options.MailboxId);
-        Console.WriteLine("VERIFY OK: Alle Manifest-Items der Auswahl sind importiert oder bewusst skipped.");
+        Console.WriteLine($"VERIFY OK: Alle Manifest-Items der Auswahl sind nach '{kind}' importiert oder bewusst skipped.");
+        if (kind == "local")
+        {
+            Console.WriteLine("HINWEIS: Geprüft wurde die lokale Ausgabe. Nach Exchange wurde damit nichts übertragen.");
+        }
+
         return 0;
     }
 
@@ -256,6 +385,7 @@ public sealed class MigrationRunner
         html.AppendLine("<table><tr><th>Status</th><th>Anzahl</th></tr>");
         html.AppendLine($"<tr><td>Discovered</td><td>{summary.Discovered}</td></tr>");
         html.AppendLine($"<tr><td>Exported</td><td>{summary.Exported}</td></tr>");
+        html.AppendLine($"<tr><td>Importing</td><td>{summary.Importing}</td></tr>");
         html.AppendLine($"<tr><td>Imported</td><td>{summary.Imported}</td></tr>");
         html.AppendLine($"<tr><td>Failed</td><td>{summary.Failed}</td></tr>");
         html.AppendLine($"<tr><td>Skipped</td><td>{summary.Skipped}</td></tr>");
@@ -284,379 +414,802 @@ public sealed class MigrationRunner
         return 0;
     }
 
-    private static async Task ImportQueueAsync(
+    private static async Task MigrateMailboxAsync(
         MigrationConfig config,
         LiteDbManifest manifest,
-        RunOptions options,
-        string outputKind,
-        string outputRoot,
-        DateTime startedUtc,
+        IDavidSession session,
+        MailboxMapping mailbox,
+        Func<MailboxMapping, IOutputTarget> outputFactory,
+        int limit,
+        TimeSpan retryDelay,
         CancellationToken cancellationToken)
     {
-        IOutputTarget? sharedLocalOutput = null;
-        if (outputKind.Equals("local", StringComparison.OrdinalIgnoreCase))
+        var stagingRoot = ConfigLoader.ResolvePath(config, config.Staging.Root);
+        var stageDirectory = Path.Combine(stagingRoot, "eml-stage", Sanitize(mailbox.Id));
+        Directory.CreateDirectory(stageDirectory);
+
+        // Der Nachweis gilt nur für den letzten Lauf; Scheitert dieser, bleibt er entzogen.
+        manifest.ClearWalkComplete(mailbox.Id);
+
+        var archive = OpenMailboxArchive(session, mailbox);
+        var transfer = new TransferOptions(
+            config.Limits.Workers,
+            config.Limits.BatchSize,
+            config.Limits.MaxBatchMegabytes * BytesPerMegabyte);
+
+        await using var output = outputFactory(mailbox);
+        await output.OpenAsync(
+            new OutputContext(Path.Combine(stagingRoot, "output", Sanitize(mailbox.Id)), AppendItems: true),
+            cancellationToken);
+
+        var startedUtc = DateTime.UtcNow;
+        var exported = 0;
+        Exception? exportFailure = null;
+        TransferResult result;
+
+        using (var queue = new TransferQueue(manifest, output, transfer, mailbox.Id, cancellationToken))
         {
-            sharedLocalOutput = new LocalFileOutputTarget();
-            await sharedLocalOutput.OpenAsync(new OutputContext(outputRoot), cancellationToken);
+            queue.Start();
+            try
+            {
+                // queue.Token enthält den Aufrufer-Token und stoppt auch bei einem Transferabbruch.
+                exported = ExportMailbox(archive, mailbox, config, manifest, stageDirectory, limit, output.Name, queue.Enqueue, queue.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                // Der Transfer wurde gestoppt; den Grund meldet CompleteAsync.
+            }
+            catch (Exception ex)
+            {
+                // Bereits Bereitgestelltes wird trotzdem noch übertragen.
+                exportFailure = ex;
+            }
+
+            result = await queue.CompleteAsync();
         }
 
-        try
+        var transferred = result.Imported + result.AlreadyPresent;
+        var retryable = result.RetryableKeys;
+        for (var pass = 1; pass <= config.Limits.Retries && retryable.Count > 0; pass++)
         {
-            foreach (var mailbox in SelectMailboxes(config, options.MailboxId, options.Wave))
+            Console.WriteLine(
+                $"  {mailbox.Id}: Wiederholung {pass}/{config.Limits.Retries} für {retryable.Count} Items");
+            await Task.Delay(retryDelay * pass, cancellationToken);
+
+            using var retryQueue = new TransferQueue(manifest, output, transfer, mailbox.Id, cancellationToken);
+            retryQueue.Start();
+            Exception? retryFailure = null;
+            try
             {
-                IOutputTarget mailboxOutput = sharedLocalOutput ??
-                                              OutputTargetFactory.Create(new OutputSettings(
-                                                  outputKind,
-                                                  mailbox.Target.Upn,
-                                                  config.M365.EwsUrl,
-                                                  config.M365.TenantId,
-                                                  config.M365.ClientId,
-                                                  config.M365.CertThumbprint,
-                                                  config.M365.EwsFolder));
-
-                if (sharedLocalOutput is null)
+                foreach (var key in retryable)
                 {
-                    await mailboxOutput.OpenAsync(new OutputContext(outputRoot), cancellationToken);
-                }
-
-                var processed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                try
-                {
-                    while (true)
+                    var document = manifest.Get(key);
+                    if (document is { State: ItemState.Failed })
                     {
-                        var pending = manifest
-                            .GetPending(mailbox.Id, 80, options.Newest)
-                            .Where(item => !processed.Contains(item.Key))
-                            .ToList();
-
-                        if (pending.Count == 0)
-                        {
-                            break;
-                        }
-
-                        var documents = pending.ToDictionary(
-                            item => item.Key,
-                            StringComparer.OrdinalIgnoreCase);
-                        var batches = pending
-                            .Chunk(10)
-                            .Select(batch => batch.Select(ToOutputItem).ToList())
-                            .ToList();
-
-                        await Parallel.ForEachAsync(
-                            batches,
-                            new ParallelOptions
-                            {
-                                MaxDegreeOfParallelism = 8,
-                                CancellationToken = cancellationToken
-                            },
-                            async (batch, token) =>
-                            {
-                                var results = await mailboxOutput.WriteBatchAsync(batch, token);
-                                foreach (var result in results)
-                                {
-                                    var key = BuildKey(
-                                        mailbox.Id,
-                                        result.Item.ArchivePath,
-                                        result.Item.Id);
-                                    if (!documents.TryGetValue(key, out var document))
-                                    {
-                                        continue;
-                                    }
-
-                                    if (result.Success)
-                                    {
-                                        document.State = ItemState.Imported;
-                                        document.ImportedUtc = DateTime.UtcNow;
-                                        document.LastError = null;
-                                        manifest.Save(document);
-                                        CleanupStagedItem(result.Item);
-                                        Console.WriteLine(
-                                            $"  OK {result.Item.Id} · {result.Item.Subject}");
-                                    }
-                                    else
-                                    {
-                                        document.State = ItemState.Failed;
-                                        document.Attempts++;
-                                        document.LastError = result.Error;
-                                        manifest.Save(document);
-                                        Console.Error.WriteLine(
-                                            $"  FEHLER {result.Item.Id}: {result.Error}");
-                                    }
-                                }
-                            });
-
-                        foreach (var document in pending)
-                        {
-                            processed.Add(document.Key);
-                        }
-                    }
-                }
-                finally
-                {
-                    if (sharedLocalOutput is null)
-                    {
-                        await mailboxOutput.CompleteAsync(
-                            new OutputSummary(processed.Count, 0, startedUtc, DateTime.UtcNow),
-                            cancellationToken);
-                        await mailboxOutput.DisposeAsync();
+                        retryQueue.Enqueue(document);
                     }
                 }
             }
-        }
-        finally
-        {
-            if (sharedLocalOutput is not null)
+            catch (OperationCanceledException)
             {
-                await sharedLocalOutput.CompleteAsync(
-                    new OutputSummary(0, 0, startedUtc, DateTime.UtcNow),
-                    cancellationToken);
-                await sharedLocalOutput.DisposeAsync();
             }
+            catch (Exception ex)
+            {
+                // Die Worker müssen enden, bevor Queue und Ausgabe freigegeben werden.
+                retryFailure = ex;
+            }
+
+            // Stoppt der Transfer, wirft Enqueue; den Grund meldet CompleteAsync.
+            var retried = await retryQueue.CompleteAsync();
+            transferred += retried.Imported + retried.AlreadyPresent;
+            retryable = retried.RetryableKeys;
+
+            if (retryFailure is not null)
+            {
+                throw new InvalidOperationException(
+                    $"Wiederholung für '{mailbox.Id}' abgebrochen: {retryFailure.Message}",
+                    retryFailure);
+            }
+        }
+
+        await output.CompleteAsync(
+            new OutputSummary(transferred, exported, startedUtc, DateTime.UtcNow),
+            cancellationToken);
+
+        Console.WriteLine($"  {mailbox.Id}: {exported} bereitgestellt, {transferred} übertragen");
+        RemoveStageDirectoryIfDone(manifest, mailbox, stageDirectory);
+
+        if (exportFailure is not null)
+        {
+            throw new InvalidOperationException(
+                $"David-Export für '{mailbox.Id}' unvollständig: {exportFailure.Message}",
+                exportFailure);
         }
     }
 
-    private static OutputItem ToOutputItem(ItemDocument document)
+    /// <summary>
+    /// Läuft vollständig synchron auf dem aufrufenden STA-Thread; ein await würde hier
+    /// den Thread und damit die COM-Apartment-Zuordnung verlieren können.
+    /// </summary>
+    private static int ExportMailbox(
+        IDavidArchive archive,
+        MailboxMapping mailbox,
+        MigrationConfig config,
+        LiteDbManifest manifest,
+        string stageDirectory,
+        int limit,
+        string targetName,
+        Action<ItemDocument> enqueue,
+        CancellationToken cancellationToken)
     {
-        var kind = DavidItemTypes.Kind(document.ItemType);
-        return new OutputItem(
-            document.ArchivePath,
-            document.DavidId,
-            document.ItemType,
-            kind,
-            document.Subject,
-            document.SizeBytes,
-            document.AttachmentCount,
-            document.ReceivedLocal,
-            document.SentLocal,
-            document.IsRead,
-            document.StagingPath is null
-                ? null
-                : Path.Combine("eml", Path.GetFileName(document.StagingPath)),
-            document.StagingPath,
-            document.Properties,
-            kind,
-            document.FolderPath,
-            document.State is ItemState.Exported or ItemState.Importing);
+        var keys = new ItemKeys(mailbox.Id);
+        var walked = 0;
+        var handled = 0;
+        var queued = 0;
+        var itemErrors = 0;
+        var archiveErrors = 0;
+        var isComplete = true;
+
+        foreach (var entry in Walk(archive, mailbox.ExcludeArchives, (path, ex) => archiveErrors += ReportArchiveError(path, ex)))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (limit > 0 && handled >= limit)
+            {
+                isComplete = false;
+                break;
+            }
+
+            ItemDocument document;
+            try
+            {
+                var (key, isRepeatedFile) = keys.Next(entry);
+                walked++;
+                document = manifest.UpsertDiscovered(ToDocument(mailbox, entry, key));
+                if (isRepeatedFile)
+                {
+                    SkipRepeatedFile(manifest, document);
+                    continue;
+                }
+
+                if (document.State == ItemState.Imported &&
+                    string.Equals(document.ImportedTo ?? targetName, targetName, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (!ExportItem(manifest, document, mailbox, config, entry, stageDirectory))
+                {
+                    if (document.State == ItemState.Failed)
+                    {
+                        handled++;
+                    }
+
+                    continue;
+                }
+            }
+            catch (Exception ex) when (ex is not LiteDB.LiteException and not OperationCanceledException)
+            {
+                // Ein nicht lesbares Item darf den Rest des Archivs nicht aufhalten, zählt aber
+                // als Lücke: Ohne vollständigen Durchlauf meldet verify kein OK.
+                itemErrors++;
+                Console.Error.WriteLine($"  FEHLER {entry.ArchivePath}: Item nicht lesbar: {ex.Message}");
+                continue;
+            }
+
+            enqueue(document);
+            queued++;
+            handled++;
+        }
+
+        Console.WriteLine($"  {mailbox.Id}: {walked} Items gelesen, {queued} zur Übertragung ({mailbox.Source.ArchivePath})");
+
+        if (itemErrors > 0 || archiveErrors > 0)
+        {
+            throw new InvalidOperationException($"{itemErrors} Items und {archiveErrors} Archive waren nicht lesbar.");
+        }
+
+        if (isComplete)
+        {
+            manifest.MarkWalkComplete(mailbox.Id, mailbox.Source.ArchivePath);
+        }
+
+        return queued;
     }
 
-    private static OutputItem? ExportItem(
+    private static int ReportArchiveError(string path, Exception exception)
+    {
+        Console.Error.WriteLine($"  FEHLER Archiv {path}: nicht vollständig lesbar: {exception.Message}");
+        return 1;
+    }
+
+    private static void SkipRepeatedFile(LiteDbManifest manifest, ItemDocument document)
+    {
+        const string Reason = "David listet dieselbe Datei mehrfach im Archiv; nur der erste Eintrag wird übertragen.";
+        Console.Error.WriteLine($"  WARNUNG {document.ArchivePath}\\{document.DavidId}: {Reason}");
+        Skip(manifest, document, Reason);
+    }
+
+    /// <summary>Liefert true, wenn das Item für die Übertragung bereitsteht.</summary>
+    private static bool ExportItem(
         LiteDbManifest manifest,
         ItemDocument document,
         MailboxMapping mailbox,
-        string archiveRoot,
-        IDavidItem item,
-        string archivePath,
-        string folderPath,
-        string key,
-        string emlStageDirectory)
+        MigrationConfig config,
+        WalkEntry entry,
+        string stageDirectory)
     {
-        if (document.State == ItemState.Imported)
-        {
-            return null;
-        }
-
         var kind = DavidItemTypes.Kind(document.ItemType);
         if (!DavidItemTypes.IsSupported(document.ItemType))
         {
-            document.State = ItemState.Skipped;
-            document.LastError = $"Typ {document.ItemType} ({kind}) wird nicht unterstützt.";
-            manifest.Save(document);
-            return null;
+            Skip(manifest, document, $"Typ {document.ItemType} ({kind}) wird nicht unterstützt.");
+            return false;
         }
 
         if (!IsIncluded(mailbox, kind))
         {
-            document.State = ItemState.Skipped;
-            document.LastError = $"Typ '{kind}' ist nicht in include enthalten.";
-            manifest.Save(document);
-            return null;
-        }
-
-        var checkExisting = document.State is ItemState.Exported or ItemState.Importing;
-        var needsEml = DavidItemTypes.IsMailLike(document.ItemType);
-        string? emlPath = null;
-
-        if (needsEml)
-        {
-            Directory.CreateDirectory(emlStageDirectory);
-            emlPath = Path.Combine(emlStageDirectory, $"{Sanitize(item.Id)}.eml");
-
-            var needsExport = document.State != ItemState.Exported &&
-                              document.State != ItemState.Importing;
-
-            if (needsExport || !File.Exists(emlPath))
-            {
-                // DVEmlFromMailItem ist nur für echte MailItem-Objekte sicher.
-                // Bei Fax/SMS/Voice/Chat kann der native Aufruf mit einer
-                // Access Violation den gesamten Prozess beenden.
-                if (document.ItemType == "2")
-                {
-                    if (!item.TryExportEml(emlPath, out var error))
-                    {
-                        Console.WriteLine(
-                            $"  HINWEIS {item.Id}: David-EML nicht verfügbar; " +
-                            "generiere EML-Fallback für mail.");
-
-                        if (!WriteSyntheticEml(
-                                emlPath,
-                                item,
-                                mailbox,
-                                archiveRoot,
-                                document.ItemType,
-                                emlStageDirectory,
-                                out var syntheticError))
-                        {
-                            document.State = ItemState.Failed;
-                            document.Attempts++;
-                            document.LastError = syntheticError;
-                            manifest.Save(document);
-                            Console.Error.WriteLine($"  FEHLER {item.Id}: {syntheticError}");
-                            return null;
-                        }
-                    }
-                }
-                else
-                {
-                    // Fax/SMS/Voice/Chat: kein nativer MailItem-Export.
-                    if (!WriteSyntheticEml(
-                            emlPath,
-                            item,
-                            mailbox,
-                            archiveRoot,
-                            document.ItemType,
-                            emlStageDirectory,
-                            out var syntheticError))
-                    {
-                        document.State = ItemState.Failed;
-                        document.Attempts++;
-                        document.LastError = syntheticError;
-                        manifest.Save(document);
-                        Console.Error.WriteLine($"  FEHLER {item.Id}: {syntheticError}");
-                        return null;
-                    }
-                }
-
-                document.State = ItemState.Exported;
-                document.StagingPath = emlPath;
-                document.ExportedUtc = DateTime.UtcNow;
-                document.LastError = null;
-                manifest.Save(document);
-            }
-        }
-        else if (document.State == ItemState.Discovered)
-        {
-            document.State = ItemState.Exported;
-            document.ExportedUtc = DateTime.UtcNow;
-            document.StagingPath = null;
-            manifest.Save(document);
+            Skip(manifest, document, $"Typ '{kind}' ist nicht in include enthalten.");
+            return false;
         }
 
         if (!DavidItemTypes.IsMailLike(document.ItemType))
         {
-            document.Properties = new Dictionary<string, string?>(item.Properties);
-            document.AttachmentCount = item.Properties.TryGetValue("AttachmentCount", out var attachmentCount) &&
-                                       int.TryParse(attachmentCount, out var parsedAttachmentCount)
-                ? parsedAttachmentCount
-                : null;
-            manifest.Save(document);
+            // EWS legt diese Objekte aus Properties an und überträgt keine Anhänge. Lieber sichtbar
+            // fehlschlagen, als das Objekt ohne seine Dateien als übertragen zu melden.
+            if (document.AttachmentCount > 0)
+            {
+                MarkFailed(
+                    manifest,
+                    document,
+                    $"{kind} hat {document.AttachmentCount} Anhänge; deren Übertragung wird nicht unterstützt.");
+                return false;
+            }
+
+            // Termine, Kontakte und Aufgaben brauchen nur die Properties im Manifest.
+            MarkExported(manifest, document, stagingPath: null);
+            return true;
         }
 
-        return new OutputItem(
-            archivePath,
-            item.Id,
-            document.ItemType,
-            kind,
-            item.Subject,
-            item.SizeBytes,
-            item.Properties.TryGetValue("AttachmentCount", out var count) && int.TryParse(count, out var parsed)
-                ? parsed
-                : null,
-            item.ReceivedLocal,
-            item.SentLocal,
-            item.IsRead,
-            emlPath is null ? null : Path.Combine("eml", Path.GetFileName(emlPath)),
-            emlPath,
-            item.Properties,
-            kind,
-            document.FolderPath ?? string.Empty,
-            checkExisting);
+        document.AttachmentCount = entry.Item.AttachmentCount ?? document.AttachmentCount;
+
+        var emlPath = StagingLayout.EmlPath(stageDirectory, document.Key);
+        if (document.ExportedUtc is not null &&
+            string.Equals(document.StagingPath, emlPath, StringComparison.OrdinalIgnoreCase) &&
+            File.Exists(emlPath))
+        {
+            // Aus einem früheren Lauf bereitgestellt; EML-Dateien ändern sich nicht mehr.
+            return true;
+        }
+
+        var workDirectory = StagingLayout.WorkDirectory(stageDirectory, document.Key);
+        var temporaryPath = emlPath + ".tmp";
+        string? error;
+        try
+        {
+            TryDeleteFile(temporaryPath);
+            error = WriteEml(temporaryPath, document, mailbox, config, entry, workDirectory);
+            if (error is null)
+            {
+                // Erst die vollständige Datei bekommt ihren Namen: Ein Absturz beim
+                // Schreiben kann so nie eine abgeschnittene Nachricht übertragen.
+                File.Move(temporaryPath, emlPath, overwrite: true);
+            }
+        }
+        catch (Exception ex) when (ex is not LiteDB.LiteException)
+        {
+            error = $"{ex.GetType().Name}: {ex.Message}";
+        }
+        finally
+        {
+            TryDeleteFile(temporaryPath);
+            TryDeleteDirectory(workDirectory);
+        }
+
+        if (error is not null)
+        {
+            MarkFailed(manifest, document, error);
+            return false;
+        }
+
+        MarkExported(manifest, document, emlPath);
+        return true;
     }
 
-    private static IEnumerable<(IDavidItem Item, string ArchivePath, string FolderPath)> Walk(
-        IDavidArchive archive,
-        IReadOnlyCollection<string> excludeArchives,
-        string folderPath = "")
+    private static void MarkFailed(LiteDbManifest manifest, ItemDocument document, string error)
     {
-        var path = archive.ResolvedPath;
+        document.State = ItemState.Failed;
+        document.StagingPath = null;
+        document.ExportedUtc = null;
+        document.LastError = error;
+        manifest.Save(document);
+        Console.Error.WriteLine($"  FEHLER {document.ArchivePath}\\{document.DavidId}: {error}");
+    }
 
-        if (excludeArchives.Any(exclude =>
-                path.Contains(exclude, StringComparison.OrdinalIgnoreCase)))
+    private static void Skip(LiteDbManifest manifest, ItemDocument document, string reason)
+    {
+        document.State = ItemState.Skipped;
+        document.LastError = reason;
+        manifest.Save(document);
+    }
+
+    private static void MarkExported(LiteDbManifest manifest, ItemDocument document, string? stagingPath)
+    {
+        document.State = ItemState.Exported;
+        document.StagingPath = stagingPath;
+        document.ExportedUtc = DateTime.UtcNow;
+        document.LastError = null;
+        manifest.Save(document);
+    }
+
+    /// <summary>Schreibt die Nachricht und liefert im Fehlerfall den Grund.</summary>
+    private static string? WriteEml(
+        string path,
+        ItemDocument document,
+        MailboxMapping mailbox,
+        MigrationConfig config,
+        WalkEntry entry,
+        string workDirectory)
+    {
+        string? nativeFailure = null;
+
+        // DVEmlFromMailItem ist nur für echte MailItem-Objekte sicher. Bei Fax/SMS/Voice/Chat
+        // kann der native Aufruf mit einer Access Violation den gesamten Prozess beenden.
+        if (document.ItemType == "2")
+        {
+            if (entry.Item.TryExportEml(path, out var nativeError) && new FileInfo(path).Length > 0)
+            {
+                return null;
+            }
+
+            // Fehlt die David-API auf diesem Rechner, träfe das jede Mail. Die generierte
+            // Nachricht ist nur Ersatz für Einzelfälle und darf nicht still die Regel werden.
+            if (nativeError?.Contains("DvApi32.dll", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                return nativeError;
+            }
+
+            nativeFailure = nativeError ?? "leere Datei";
+            Console.WriteLine(
+                $"  HINWEIS {document.ArchivePath}\\{document.DavidId}: David-EML nicht verfügbar " +
+                $"({nativeFailure}); generiere EML-Fallback.");
+        }
+
+        return WriteSyntheticEml(path, document, mailbox, config, entry, workDirectory, nativeFailure);
+    }
+
+    private static string? WriteSyntheticEml(
+        string path,
+        ItemDocument document,
+        MailboxMapping mailbox,
+        MigrationConfig config,
+        WalkEntry entry,
+        string workDirectory,
+        string? nativeFailure)
+    {
+        var item = entry.Item;
+        var type = document.ItemType;
+        var kind = DavidItemTypes.Kind(type);
+        var isOutgoing = IsOutgoing(item, entry.FolderPath);
+
+        string Get(string key) =>
+            item.Properties.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value)
+                ? value
+                : "";
+
+        var counterpart = isOutgoing ? Get("To") : Get("From");
+        var subject = !string.IsNullOrWhiteSpace(item.Subject)
+            ? item.Subject
+            : string.IsNullOrWhiteSpace(counterpart)
+                ? FallbackSubject(type, kind)
+                : $"{FallbackSubject(type, kind)} {counterpart}";
+
+        var localDate = item.ReceivedLocal ?? item.SentLocal ?? DateTime.Now;
+        var attachments = new List<SyntheticAttachment>();
+
+        // Auch bei vorhandenen Anhängen: Das Faxbild selbst darf nie verloren gehen.
+        var image = type is "3" or "5"
+            ? ReadSourceImage(item, config.David.ArchiveRoot)
+            : null;
+
+        // Faxe führen am echten David keine lesbaren Anhänge: Ohne das genannte Bild fehlt die Seite selbst.
+        if (type == "3" && image is null && !string.IsNullOrWhiteSpace(item.FaxImagePath))
+        {
+            return $"Fax: Die genannte Datei ist nicht lesbar oder leer: {item.FaxImagePath}. " +
+                   "Archiv entpacken ('david2exchange unpack' plus David-Bereinigung) oder david.archiveRoot prüfen.";
+        }
+
+        if (type == "3" && image is not null)
+        {
+            Directory.CreateDirectory(workDirectory);
+            var label = string.IsNullOrWhiteSpace(counterpart) ? Sanitize(item.Id) : Sanitize(counterpart);
+            var pdfPath = Path.Combine(workDirectory, $"fax-{label}-{localDate:yyyyMMdd-HHmm}.pdf");
+            var metadata = new FaxPdfMetadata(
+                subject,
+                string.IsNullOrWhiteSpace(Get("From")) ? mailbox.Target.Upn : Get("From"),
+                string.IsNullOrWhiteSpace(counterpart) ? subject : $"Fax {counterpart}",
+                string.IsNullOrWhiteSpace(counterpart) ? "David;Fax" : $"David;Fax;{counterpart}",
+                $"david2exchange {ToolInfo.Version}",
+                $"david2exchange {ToolInfo.Version}",
+                localDate);
+
+            if (FaxPdfConverter.TryConvertTiffToPdf(image, pdfPath, metadata, out var pdfError))
+            {
+                attachments.Add(new SyntheticAttachment(Path.GetFileName(pdfPath), pdfPath));
+            }
+            else
+            {
+                Console.WriteLine(
+                    $"  HINWEIS {document.ArchivePath}\\{document.DavidId}: PDF nicht erzeugt ({pdfError}); hänge TIFF an.");
+                var tiffPath = Path.Combine(workDirectory, $"fax-{label}.tif");
+                File.WriteAllBytes(tiffPath, image);
+                attachments.Add(new SyntheticAttachment(Path.GetFileName(tiffPath), tiffPath));
+            }
+        }
+        else if (type == "5" && image is not null)
+        {
+            Directory.CreateDirectory(workDirectory);
+            var audioPath = Path.Combine(workDirectory, $"voice-{Sanitize(item.Id)}{AudioExtension(image)}");
+            File.WriteAllBytes(audioPath, image);
+            attachments.Add(new SyntheticAttachment(Path.GetFileName(audioPath), audioPath));
+        }
+
+        var position = 0;
+        foreach (var attachment in item.Attachments)
+        {
+            // Eigener Ordner je Anhang: David erlaubt mehrere Anhänge gleichen Namens.
+            var attachmentDirectory = Path.Combine(workDirectory, (position++).ToString());
+            Directory.CreateDirectory(attachmentDirectory);
+            if (!item.TryCopyAttachment(attachment, attachmentDirectory, out var copiedPath, out var copyError))
+            {
+                return $"Anhang '{attachment.FileName}' konnte nicht exportiert werden: {copyError}";
+            }
+
+            if (copiedPath is not null)
+            {
+                attachments.Add(new SyntheticAttachment(attachment.FileName, copiedPath));
+            }
+        }
+
+        if (attachments.Count == 0 && type is "3" or "5")
+        {
+            return $"{(type == "3" ? "Fax" : "Voice")} enthält keine exportierbare Datei (Bild/Audio/Anhang). " +
+                   $"Quellpfad: {item.FaxImagePath ?? "(keiner)"}. Es wird keine reine Text-Nachricht erzeugt.";
+        }
+
+        if (attachments.Count == 0 &&
+            type is "2" or "4" or "6" &&
+            string.IsNullOrWhiteSpace(Get("BodyText")) &&
+            string.IsNullOrWhiteSpace(Get("BodyHtml")))
+        {
+            // Lieber sichtbar fehlschlagen als eine leere Nachricht als übertragen melden.
+            return type switch
+            {
+                "2" => $"Mail enthält keinen lesbaren Text, David-EML nicht verfügbar: {nativeFailure}",
+                "4" => "SMS enthält keinen lesbaren Text.",
+                _ => "Chat enthält keinen lesbaren Text."
+            };
+        }
+
+        var timeZone = DavidTimeZone.Resolve(config.David.Timezone);
+        var date = new DateTimeOffset(
+            DateTime.SpecifyKind(localDate, DateTimeKind.Unspecified),
+            timeZone.GetUtcOffset(DateTime.SpecifyKind(localDate, DateTimeKind.Unspecified)));
+
+        var targetAddress = mailbox.Target.Upn;
+        var davidFrom = string.IsNullOrWhiteSpace(Get("From")) ? "david2exchange" : Get("From");
+
+        // Bei Mails ist To nur ein Anzeigetext; die echten Adressen stehen in Recipients.
+        var recipients = type == "2" ? Get("Recipients") : "";
+        var davidTo = recipients.Length > 0
+            ? recipients
+            : string.IsNullOrWhiteSpace(Get("To")) ? targetAddress : Get("To");
+
+        SyntheticEml.Write(
+            new SyntheticEmlContent(
+                isOutgoing ? targetAddress : davidFrom,
+                isOutgoing ? davidTo : targetAddress,
+                string.IsNullOrWhiteSpace(Get("CC")) ? null : Get("CC"),
+                subject,
+                date,
+                $"david-{StagingLayout.Token(document.Key)}@{SyntheticAddressDomain}",
+                kind,
+                item.Id,
+                Get("BodyText"),
+                Get("BodyHtml"),
+                attachments,
+                SyntheticAddressDomain),
+            path);
+
+        return null;
+    }
+
+    private static string FallbackSubject(string type, string kind)
+    {
+        return type switch
+        {
+            "3" => "[FAX]",
+            "4" => "[SMS]",
+            "5" => "[Voice]",
+            "6" => "[Chat]",
+            _ => $"[David {kind}]"
+        };
+    }
+
+    private static byte[]? ReadSourceImage(IDavidItem item, string archiveRoot)
+    {
+        if (item.FaxImage is { Length: > 0 } bytes)
+        {
+            return bytes;
+        }
+
+        if (string.IsNullOrWhiteSpace(item.FaxImagePath))
+        {
+            return null;
+        }
+
+        var resolved = ResolveArchivePath(item.FaxImagePath, archiveRoot);
+        if (!File.Exists(resolved))
+        {
+            return null;
+        }
+
+        // Eine leere Datei (z. B. abgebrochener Empfang) ist kein Inhalt.
+        var content = File.ReadAllBytes(resolved);
+        return content.Length > 0 ? content : null;
+    }
+
+    private static string AudioExtension(byte[] data)
+    {
+        if (data.Length >= 4 && data[0] == 'R' && data[1] == 'I' && data[2] == 'F' && data[3] == 'F')
+        {
+            return ".wav";
+        }
+
+        return data.Length >= 3 && data[0] == 'I' && data[1] == 'D' && data[2] == '3' ? ".mp3" : ".bin";
+    }
+
+    private static bool IsOutgoing(IDavidItem item, string folderPath)
+    {
+        // David führt die Richtung je Item; der Ordner ist nur die Rückfallebene.
+        return item.IsReceived is { } isReceived
+            ? !isReceived
+            : FolderMapping.IsSentRoot(folderPath);
+    }
+
+    internal sealed record WalkEntry(IDavidItem Item, string ArchivePath, string FolderPath);
+
+    /// <summary>Vergibt je Lauf eindeutige Manifest-Schlüssel für ein Postfach.</summary>
+    private sealed class ItemKeys
+    {
+        private readonly string _mailboxId;
+        private readonly Dictionary<string, int> _seen = new(StringComparer.OrdinalIgnoreCase);
+
+        public ItemKeys(string mailboxId)
+        {
+            _mailboxId = mailboxId;
+        }
+
+        /// <summary>
+        /// Inhaltsbasierte Kennungen dürfen sich wiederholen (z. B. identische Kontakte) und werden
+        /// durchnummeriert. Dieselbe David-Datei wird nicht doppelt gesendet, bekommt aber eine eigene
+        /// Zeile im Manifest, damit die Wiederholung nachvollziehbar bleibt.
+        /// </summary>
+        public (string Key, bool IsRepeatedFile) Next(WalkEntry entry)
+        {
+            var token = DavidItemIdentity.Of(entry.Item);
+            var key = $"{_mailboxId}|{entry.ArchivePath}|{token}";
+            _seen.TryGetValue(key, out var occurrences);
+            _seen[key] = occurrences + 1;
+
+            if (occurrences == 0)
+            {
+                return (key, false);
+            }
+
+            return token.StartsWith(DavidItemIdentity.ContentPrefix, StringComparison.Ordinal)
+                ? ($"{key}#{occurrences + 1}", false)
+                : ($"{key}#dup{occurrences + 1}", true);
+        }
+    }
+
+    private static IEnumerable<WalkEntry> Walk(
+        IDavidArchive root,
+        IReadOnlyCollection<string> excludeArchives,
+        Action<string, Exception> onArchiveError)
+    {
+        // Das erste Pfadsegment ist immer ein technischer Schlüssel (in, out, cal, ...).
+        var rootSegment = RootSegment(root);
+        return WalkCore(root, root.ResolvedPath, excludeArchives, rootSegment ?? "", onArchiveError);
+    }
+
+    /// <summary>
+    /// Ein nicht lesbares Archiv darf seine Geschwister nicht aufhalten, zählt aber als Lücke.
+    /// Von Hand iteriert, weil yield nicht in einem try mit catch stehen darf.
+    /// </summary>
+    private static IEnumerable<T> Guarded<T>(
+        Func<IEnumerable<T>> open,
+        string path,
+        Action<string, Exception> onError)
+    {
+        IEnumerator<T>? enumerator = null;
+        try
+        {
+            enumerator = open().GetEnumerator();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            onError(path, ex);
+        }
+
+        if (enumerator is null)
         {
             yield break;
         }
 
-        foreach (var item in archive.Items)
+        using (enumerator)
         {
-            var itemPath = item.Properties.TryGetValue("ArchivePath", out var value) &&
-                           !string.IsNullOrWhiteSpace(value)
-                ? value
-                : path;
-            yield return (item, itemPath, folderPath);
+            while (true)
+            {
+                bool hasNext;
+                try
+                {
+                    hasNext = enumerator.MoveNext();
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    onError(path, ex);
+                    hasNext = false;
+                }
+
+                if (!hasNext)
+                {
+                    yield break;
+                }
+
+                yield return enumerator.Current;
+            }
+        }
+    }
+
+    private static string? RootSegment(IDavidArchive archive)
+    {
+        if (!string.IsNullOrWhiteSpace(archive.FolderKind))
+        {
+            return archive.FolderKind;
         }
 
-        foreach (var subArchive in archive.SubArchives)
+        return FolderMapping.IsKnownRoot(archive.FolderKey) ? archive.FolderKey : null;
+    }
+
+    private static IEnumerable<WalkEntry> WalkCore(
+        IDavidArchive archive,
+        string rootPath,
+        IReadOnlyCollection<string> excludeArchives,
+        string folderPath,
+        Action<string, Exception> onArchiveError)
+    {
+        var path = archive.ResolvedPath;
+
+        if (IsExcluded(archive, excludeArchives))
         {
-            var segment = string.IsNullOrWhiteSpace(folderPath)
-                ? (!string.IsNullOrWhiteSpace(subArchive.FolderKind)
-                    ? subArchive.FolderKind
-                    : subArchive.FolderKey)
-                : subArchive.Name;
-            if (string.IsNullOrWhiteSpace(segment))
+            Console.WriteLine($"  HINWEIS: Archiv '{path}' per excludeArchives ausgeschlossen.");
+            yield break;
+        }
+
+        foreach (var item in Guarded(() => archive.Items, path, onArchiveError))
+        {
+            yield return new WalkEntry(item, path, folderPath);
+        }
+
+        foreach (var subArchive in Guarded(() => archive.SubArchives, path, onArchiveError))
+        {
+            // Verknüpfte Archive gehören nicht in dieses Zielpostfach.
+            if (DavidArchivePaths.IsForeign(subArchive.ResolvedPath, rootPath))
             {
-                segment = subArchive.Name;
+                Console.WriteLine($"  HINWEIS: Verknüpftes Archiv '{subArchive.ResolvedPath}' übersprungen.");
+                continue;
             }
 
-            var subFolder = string.IsNullOrWhiteSpace(folderPath)
-                ? segment
-                : folderPath.TrimEnd('/') + "/" + segment;
-
-            foreach (var entry in Walk(subArchive, excludeArchives, subFolder))
+            foreach (var entry in WalkCore(subArchive, rootPath, excludeArchives, SubFolderPath(folderPath, subArchive), onArchiveError))
             {
                 yield return entry;
             }
         }
     }
 
-    private static ItemDocument ToDocument(
-        MailboxMapping mailbox,
-        IDavidItem item,
-        string archivePath,
-        string folderPath)
+    /// <summary>
+    /// Vergleicht ganze Pfadsegmente und den Anzeigenamen. Ein Teilstring würde mit
+    /// "ADDRESS" auch ein Mailarchiv wie COMMON\IP-Addresses still ausschließen.
+    /// </summary>
+    private static bool IsExcluded(IDavidArchive archive, IReadOnlyCollection<string> excludeArchives)
     {
+        var path = "\\" + archive.ResolvedPath.Trim('\\') + "\\";
+        return excludeArchives.Any(exclude =>
+            path.Contains("\\" + exclude.Trim().Trim('\\') + "\\", StringComparison.OrdinalIgnoreCase) ||
+            archive.Name.Equals(exclude.Trim(), StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string SubFolderPath(string parent, IDavidArchive subArchive)
+    {
+        // Ein "/" im Anzeigenamen ist Teil des Namens und keine weitere Ordnerebene.
+        var name = (string.IsNullOrWhiteSpace(subArchive.Name) ? subArchive.FolderKey : subArchive.Name)
+            .Replace('/', '_')
+            .Replace('\\', '_');
+        if (!string.IsNullOrWhiteSpace(parent))
+        {
+            return parent.TrimEnd('/') + "/" + name;
+        }
+
+        // "system" ist nur ein Behälter: Papierkorb, Spam und Entwürfe liegen darunter.
+        if (subArchive.FolderKey.Equals("system", StringComparison.OrdinalIgnoreCase))
+        {
+            return "";
+        }
+
+        // Eigene Ordner der obersten Ebene kommen unter den Eingang; ihr Anzeigename
+        // darf nie mit einem technischen Schlüssel verwechselt werden.
+        return RootSegment(subArchive) ?? "in/" + name;
+    }
+
+    private static IDavidArchive OpenMailboxArchive(IDavidSession session, MailboxMapping mailbox)
+    {
+        var archive = session.OpenArchive(mailbox.Source.ArchivePath);
+        if (archive.FolderKey.Equals("archive", StringComparison.OrdinalIgnoreCase))
+        {
+            // Sonst würden alle Benutzerarchive in dieses eine Zielpostfach wandern.
+            throw new CliException(
+                $"mailbox '{mailbox.Id}': '{mailbox.Source.ArchivePath}' löst auf die gesamte " +
+                "David-Archivwurzel auf. Bitte den konkreten Archivpfad angeben, z. B. COMMON.");
+        }
+
+        return archive;
+    }
+
+    private static ItemDocument ToDocument(MailboxMapping mailbox, WalkEntry entry, string key)
+    {
+        var item = entry.Item;
         var type = string.IsNullOrWhiteSpace(item.Type) ? "unknown" : item.Type.Trim();
+
+        // Nur Termine, Kontakte und Aufgaben brauchen die teuer zu lesenden Properties.
+        var isMailLike = DavidItemTypes.IsMailLike(type);
+        var properties = isMailLike
+            ? new Dictionary<string, string?>()
+            : new Dictionary<string, string?>(item.Properties);
+
         return new ItemDocument
         {
-            Key = BuildKey(mailbox.Id, archivePath, item.Id),
+            Key = key,
             MailboxId = mailbox.Id,
-            ArchivePath = archivePath,
-            FolderPath = folderPath,
+            ArchivePath = entry.ArchivePath,
+            FolderPath = entry.FolderPath,
             DavidId = item.Id,
             ItemType = type,
             Subject = item.Subject,
             SizeBytes = item.SizeBytes,
-            AttachmentCount = item.Properties.TryGetValue("AttachmentCount", out var count) &&
+            AttachmentCount = properties.TryGetValue("AttachmentCount", out var count) &&
                               int.TryParse(count, out var parsed)
                 ? parsed
                 : null,
-            Properties = DavidItemTypes.IsMailLike(type)
-                ? new Dictionary<string, string?>()
-                : new Dictionary<string, string?>(item.Properties),
+            Properties = properties,
             ReceivedLocal = item.ReceivedLocal,
             SentLocal = item.SentLocal,
-            IsRead = item.IsRead,
+            IsRead = IsOutgoing(item, entry.FolderPath) ? true : item.IsRead,
             FirstSeenUtc = DateTime.UtcNow,
             LastSeenUtc = DateTime.UtcNow
         };
+    }
+
+    private static int EffectiveLimit(MigrationConfig config, RunOptions options)
+    {
+        var limit = options.Limit >= 0 ? options.Limit : config.Limits.Limit;
+        if (limit > 0)
+        {
+            Console.WriteLine(
+                $"HINWEIS: limits.limit={limit} aktiv; je Postfach nur {limit} Items. " +
+                "Für alle Items --all verwenden.");
+        }
+
+        return limit;
     }
 
     private static void WarnIfFax(MigrationConfig config)
@@ -690,222 +1243,6 @@ public sealed class MigrationRunner
             value.Equals(kind + "s", StringComparison.OrdinalIgnoreCase));
     }
 
-    private static string BuildKey(string mailboxId, string archivePath, string davidId)
-    {
-        return $"{mailboxId}|{archivePath}|{davidId}";
-    }
-
-    private static bool WriteSyntheticEml(
-        string path,
-        IDavidItem item,
-        MailboxMapping mailbox,
-        string archiveRoot,
-        string type,
-        string stageDirectory,
-        out string? error)
-    {
-        error = null;
-
-        string Get(string key) =>
-            item.Properties.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value)
-                ? value
-                : "";
-
-        var kind = DavidItemTypes.Kind(type);
-        var from = Get("From");
-        if (string.IsNullOrWhiteSpace(from))
-        {
-            from = "david2exchange@david.local";
-        }
-
-        var to = mailbox.Target.Upn;
-        var faxNumber = type == "3" ? Get("To") : "";
-        var subject = !string.IsNullOrWhiteSpace(item.Subject)
-            ? item.Subject
-            : type == "3"
-                ? string.IsNullOrWhiteSpace(faxNumber)
-                    ? "[FAX]"
-                    : $"[FAX] {faxNumber}"
-                : $"[David {kind}] {item.Id}";
-        var body = Get("BodyText");
-        var html = Get("BodyHtml");
-        var date = item.ReceivedLocal ?? DateTime.Now;
-
-        var attachments = new List<(string Name, string Path)>();
-        var faxImage = item.FaxImage;
-        if (faxImage is null && !string.IsNullOrWhiteSpace(item.FaxImagePath))
-        {
-            var resolvedFaxPath = ResolveArchivePath(item.FaxImagePath, archiveRoot);
-            if (File.Exists(resolvedFaxPath))
-            {
-                faxImage = File.ReadAllBytes(resolvedFaxPath);
-            }
-        }
-
-        if (type == "3" && item.Attachments.Count == 0 && faxImage is { Length: > 0 })
-        {
-            var faxDirectory = Path.Combine(
-                stageDirectory,
-                "attachments",
-                Sanitize(item.Id));
-            Directory.CreateDirectory(faxDirectory);
-
-            var faxLabel = string.IsNullOrWhiteSpace(faxNumber)
-                ? Sanitize(item.Id)
-                : Sanitize(faxNumber);
-            var pdfPath = Path.Combine(
-                faxDirectory,
-                $"fax-{faxLabel}-{date:yyyyMMdd-HHmm}.pdf");
-
-            var pdfMetadata = new FaxPdfMetadata(
-                subject,
-                from,
-                string.IsNullOrWhiteSpace(faxNumber) ? subject : $"Fax {faxNumber}",
-                string.IsNullOrWhiteSpace(faxNumber)
-                    ? "David;Fax"
-                    : $"David;Fax;{faxNumber}",
-                $"david2exchange {ToolInfo.Version}",
-                $"david2exchange {ToolInfo.Version}",
-                date);
-
-            if (FaxPdfConverter.TryConvertTiffToPdf(faxImage, pdfPath, pdfMetadata, out _))
-            {
-                attachments.Add((Path.GetFileName(pdfPath), pdfPath));
-            }
-            else
-            {
-                var tiffPath = Path.Combine(faxDirectory, $"fax-{faxLabel}.tif");
-                File.WriteAllBytes(tiffPath, faxImage);
-                attachments.Add((Path.GetFileName(tiffPath), tiffPath));
-            }
-        }
-
-        if (item.Attachments.Count > 0)
-        {
-            var attachmentDirectory = Path.Combine(
-                stageDirectory,
-                "attachments",
-                Sanitize(item.Id));
-            Directory.CreateDirectory(attachmentDirectory);
-
-            foreach (var attachment in item.Attachments)
-            {
-                if (!item.TryCopyAttachment(
-                        attachment,
-                        attachmentDirectory,
-                        out var copiedPath,
-                        out var copyError))
-                {
-                    error = $"Anhang '{attachment.FileName}' konnte nicht exportiert werden: {copyError}";
-                    return false;
-                }
-
-                if (copiedPath is not null)
-                {
-                    attachments.Add((attachment.FileName, copiedPath));
-                }
-            }
-        }
-
-        var builder = new StringBuilder();
-        builder.AppendLine($"From: {SanitizeHeader(from)}");
-        builder.AppendLine($"To: {SanitizeHeader(to)}");
-        var cc = Get("CC");
-        if (!string.IsNullOrWhiteSpace(cc))
-        {
-            builder.AppendLine($"Cc: {SanitizeHeader(cc)}");
-        }
-
-        builder.AppendLine($"Subject: {SanitizeHeader(subject)}");
-        builder.AppendLine($"Date: {date:r}");
-        builder.AppendLine($"Message-ID: <david-{Sanitize(item.Id)}@{mailbox.Id}.david.local>");
-        builder.AppendLine("MIME-Version: 1.0");
-        builder.AppendLine($"X-David-Type: {kind}");
-        builder.AppendLine($"X-David-Item-ID: {SanitizeHeader(item.Id)}");
-
-        if (type == "3" && attachments.Count == 0)
-        {
-            error = "Fax enthält kein exportierbares Faxbild (Image/Attachment). " +
-                    $"Image-Pfad: {item.FaxImagePath ?? "(keiner)"}. " +
-                    "Es wird keine reine Text-EML erzeugt.";
-            return false;
-        }
-
-        var hasHtml = !string.IsNullOrWhiteSpace(html);
-
-        if (attachments.Count == 0)
-        {
-            if (hasHtml)
-            {
-                var alternative = "----david2exchange-alt-" + Guid.NewGuid().ToString("N");
-                builder.AppendLine($"Content-Type: multipart/alternative; boundary=\"{alternative}\"");
-                builder.AppendLine();
-                AppendTextPart(builder, alternative, "text/plain", body);
-                AppendTextPart(builder, alternative, "text/html", html);
-                builder.AppendLine($"--{alternative}--");
-            }
-            else
-            {
-                builder.AppendLine("Content-Type: text/plain; charset=utf-8");
-                builder.AppendLine();
-                builder.AppendLine(body);
-            }
-        }
-        else
-        {
-            var boundary = "----david2exchange-" + Guid.NewGuid().ToString("N");
-            builder.AppendLine($"Content-Type: multipart/mixed; boundary=\"{boundary}\"");
-            builder.AppendLine();
-            builder.AppendLine($"--{boundary}");
-
-            if (hasHtml)
-            {
-                var alternative = "----david2exchange-alt-" + Guid.NewGuid().ToString("N");
-                builder.AppendLine($"Content-Type: multipart/alternative; boundary=\"{alternative}\"");
-                builder.AppendLine();
-                AppendTextPart(builder, alternative, "text/plain", body);
-                AppendTextPart(builder, alternative, "text/html", html);
-                builder.AppendLine($"--{alternative}--");
-            }
-            else
-            {
-                builder.AppendLine("Content-Type: text/plain; charset=utf-8");
-                builder.AppendLine();
-                builder.AppendLine(body);
-            }
-
-            foreach (var attachment in attachments)
-            {
-                var name = SanitizeHeader(attachment.Name);
-                var mime = MimeTypeFor(name);
-                builder.AppendLine($"--{boundary}");
-                builder.AppendLine($"Content-Type: {mime}; name=\"{name}\"");
-                builder.AppendLine("Content-Transfer-Encoding: base64");
-                builder.AppendLine($"Content-Disposition: attachment; filename=\"{name}\"");
-                builder.AppendLine();
-                builder.AppendLine(WrapBase64(File.ReadAllBytes(attachment.Path)));
-            }
-
-            builder.AppendLine($"--{boundary}--");
-        }
-
-        File.WriteAllText(path, builder.ToString(), new UTF8Encoding(false));
-        return true;
-    }
-
-    private static void AppendTextPart(
-        StringBuilder builder,
-        string boundary,
-        string contentType,
-        string content)
-    {
-        builder.AppendLine($"--{boundary}");
-        builder.AppendLine($"Content-Type: {contentType}; charset=utf-8");
-        builder.AppendLine("Content-Transfer-Encoding: 8bit");
-        builder.AppendLine();
-        builder.AppendLine(content);
-    }
-
     private static string ResolveArchivePath(string path, string archiveRoot)
     {
         if (File.Exists(path) || string.IsNullOrWhiteSpace(archiveRoot))
@@ -932,95 +1269,46 @@ public sealed class MigrationRunner
         }
 
         var withArchive = Path.Combine(archiveRoot, "archive", relative);
-        if (File.Exists(withArchive))
-        {
-            return withArchive;
-        }
-
-        return direct;
+        return File.Exists(withArchive) ? withArchive : direct;
     }
 
-    private static string MimeTypeFor(string fileName)
+    /// <summary>Entfernt verwaiste Staging-Dateien, sobald für das Postfach nichts mehr offen ist.</summary>
+    private static void RemoveStageDirectoryIfDone(
+        LiteDbManifest manifest,
+        MailboxMapping mailbox,
+        string stageDirectory)
     {
-        return Path.GetExtension(fileName).ToLowerInvariant() switch
+        var summary = manifest.GetSummary(mailbox.Id);
+        if (summary.Discovered + summary.Exported + summary.Importing + summary.Failed == 0)
         {
-            ".wav" => "audio/wav",
-            ".mp3" => "audio/mpeg",
-            ".tif" or ".tiff" => "image/tiff",
-            ".pdf" => "application/pdf",
-            ".jpg" or ".jpeg" => "image/jpeg",
-            ".png" => "image/png",
-            _ => "application/octet-stream"
-        };
-    }
-
-    private static string WrapBase64(byte[] data)
-    {
-        var base64 = Convert.ToBase64String(data);
-        var builder = new StringBuilder(base64.Length + base64.Length / 76 * 2);
-        for (var offset = 0; offset < base64.Length; offset += 76)
-        {
-            builder.AppendLine(base64.Substring(offset, Math.Min(76, base64.Length - offset)));
-        }
-
-        return builder.ToString();
-    }
-
-    private static string SanitizeHeader(string value)
-    {
-        return value
-            .Replace("\r", " ", StringComparison.Ordinal)
-            .Replace("\n", " ", StringComparison.Ordinal)
-            .Trim();
-    }
-
-    private static void CleanupImportedStaging(LiteDbManifest manifest)
-    {
-        foreach (var document in manifest.GetAll()
-                     .Where(item =>
-                         item.State == ItemState.Imported &&
-                         !string.IsNullOrWhiteSpace(item.StagingPath)))
-        {
-            CleanupStagedPath(document.StagingPath, document.DavidId);
+            TryDeleteDirectory(stageDirectory);
         }
     }
 
-    private static void CleanupStagedItem(OutputItem item)
+    private static void TryDeleteFile(string path)
     {
-        CleanupStagedPath(item.StagedEmlPath, item.Id);
-    }
-
-    private static void CleanupStagedPath(string? path, string id)
-    {
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return;
-        }
-
         try
         {
-            if (File.Exists(path))
-            {
-                File.Delete(path);
-            }
+            File.Delete(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine($"  WARNUNG Aufräumen {path}: {ex.Message}");
+        }
+    }
 
-            var directory = Path.GetDirectoryName(path);
-            if (!string.IsNullOrWhiteSpace(directory))
+    private static void TryDeleteDirectory(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path))
             {
-                var attachmentDirectory = Path.Combine(
-                    directory,
-                    "attachments",
-                    Sanitize(id));
-                if (Directory.Exists(attachmentDirectory))
-                {
-                    Directory.Delete(attachmentDirectory, recursive: true);
-                }
+                Directory.Delete(path, recursive: true);
             }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            Console.Error.WriteLine(
-                $"  WARNUNG Aufräumen {path}: {ex.Message}");
+            Console.Error.WriteLine($"  WARNUNG Aufräumen {path}: {ex.Message}");
         }
     }
 
@@ -1055,16 +1343,20 @@ public sealed class MigrationRunner
                 mailbox.Wave.Equals(wave, StringComparison.OrdinalIgnoreCase));
         }
 
-        return string.IsNullOrWhiteSpace(mailboxId)
+        var selected = (string.IsNullOrWhiteSpace(mailboxId)
             ? enabled
-            : enabled.Where(x =>
-                x.Id.Equals(mailboxId, StringComparison.OrdinalIgnoreCase));
+            : enabled.Where(x => x.Id.Equals(mailboxId, StringComparison.OrdinalIgnoreCase))).ToList();
+
+        // Ein Tippfehler darf nicht wie ein erfolgreicher Lauf ohne Arbeit aussehen.
+        return selected.Count > 0
+            ? selected
+            : throw new CliException(
+                $"Kein aktives Postfach passt zur Auswahl (mailbox={mailboxId ?? "alle"}, wave={wave ?? "alle"}).");
     }
 
     private static void PrintSkippedReasons(LiteDbManifest manifest, string? mailboxId)
     {
-        var groups = manifest.GetAll(mailboxId)
-            .Where(item => item.State == ItemState.Skipped)
+        var groups = manifest.GetByState(ItemState.Skipped, mailboxId)
             .GroupBy(item => string.IsNullOrWhiteSpace(item.LastError)
                 ? "ohne Grund"
                 : item.LastError)
@@ -1089,8 +1381,7 @@ public sealed class MigrationRunner
         Console.WriteLine($"=== {phase} ===");
         Console.WriteLine(
             $"discovered={summary.Discovered} exported={summary.Exported} " +
-            $"imported={summary.Imported} failed={summary.Failed} skipped={summary.Skipped} " +
-            $"total={summary.Total}");
+            $"importing={summary.Importing} imported={summary.Imported} " +
+            $"failed={summary.Failed} skipped={summary.Skipped} total={summary.Total}");
     }
 }
-

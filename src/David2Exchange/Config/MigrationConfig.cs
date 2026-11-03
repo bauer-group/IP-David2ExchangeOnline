@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 using David2Exchange.Cli;
+using David2Exchange.Infrastructure;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
 
@@ -31,6 +32,8 @@ public sealed class MigrationConfig
         {
             throw new CliException("david.logon fehlt.");
         }
+
+        DavidTimeZone.Resolve(David.Timezone);
 
         if (Mailboxes.Count == 0)
         {
@@ -80,6 +83,26 @@ public sealed class MigrationConfig
         {
             throw new CliException("limits.limit muss >= 0 sein.");
         }
+
+        if (Limits.Retries < 0)
+        {
+            throw new CliException("limits.retries muss >= 0 sein.");
+        }
+
+        if (Limits.Workers is < 1 or > 16)
+        {
+            throw new CliException("limits.workers muss zwischen 1 und 16 liegen.");
+        }
+
+        if (Limits.BatchSize is < 1 or > 100)
+        {
+            throw new CliException("limits.batchSize muss zwischen 1 und 100 liegen.");
+        }
+
+        if (Limits.MaxBatchMegabytes < 1)
+        {
+            throw new CliException("limits.maxBatchMegabytes muss >= 1 sein.");
+        }
     }
 }
 
@@ -113,7 +136,19 @@ public sealed class StagingConfig
 public sealed class LimitsConfig
 {
     public int Limit { get; set; } = 10;
+
+    /// <summary>Zusätzliche Durchläufe je Postfach für vorübergehend fehlgeschlagene Items.</summary>
     public int Retries { get; set; } = 3;
+
+    /// <summary>Parallele EWS-Worker. 1 mit batchSize 1 ergibt den langsamen Einzelmodus.</summary>
+    public int Workers { get; set; } = 8;
+
+    /// <summary>Maximale Nachrichten je CreateItem-Aufruf.</summary>
+    public int BatchSize { get; set; } = 20;
+
+    /// <summary>Maximale EML-Größe je Batch; ein einzelnes größeres Item läuft allein.</summary>
+    public int MaxBatchMegabytes { get; set; } = 20;
+
     public string Wave { get; set; } = "default";
 }
 

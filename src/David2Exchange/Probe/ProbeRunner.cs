@@ -413,15 +413,13 @@ public sealed class ProbeRunner
         return type.Trim();
     }
 
-    private static bool MayExportEml(string type)
+    /// <summary>
+    /// DVEmlFromMailItem ist nur für echte MailItem-Objekte sicher. Bei Fax/SMS/Voice/Chat kann
+    /// der native Aufruf den ganzen Prozess beenden. "mail" ist der Typ der Mock-Quelle.
+    /// </summary>
+    internal static bool MayExportEml(string type)
     {
-        return type is "2" or "3" or "4" or "5" or "6" ||
-               type.Contains("mail", StringComparison.OrdinalIgnoreCase) ||
-               type.Contains("email", StringComparison.OrdinalIgnoreCase) ||
-               type.Contains("fax", StringComparison.OrdinalIgnoreCase) ||
-               type.Contains("sms", StringComparison.OrdinalIgnoreCase) ||
-               type.Contains("voice", StringComparison.OrdinalIgnoreCase) ||
-               type.Contains("chat", StringComparison.OrdinalIgnoreCase);
+        return type == "2" || type.Equals("mail", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsExcluded(IDavidItem item, ProbeOptions options)

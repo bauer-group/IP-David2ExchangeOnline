@@ -9,11 +9,19 @@ namespace David2Exchange.Infrastructure;
 
 internal static class ComHelpers
 {
+    // DoNotWrapExceptions: Fehlertexte nennen die echte COM-Ursache statt
+    // "Exception has been thrown by the target of an invocation".
     private const BindingFlags GetFlags =
-        BindingFlags.GetProperty | BindingFlags.Public | BindingFlags.Instance;
+        BindingFlags.GetProperty | BindingFlags.Public | BindingFlags.Instance | BindingFlags.DoNotWrapExceptions;
 
     private const BindingFlags InvokeFlags =
-        BindingFlags.InvokeMethod | BindingFlags.Public | BindingFlags.Instance;
+        BindingFlags.InvokeMethod | BindingFlags.Public | BindingFlags.Instance | BindingFlags.DoNotWrapExceptions;
+
+    private const BindingFlags SetFlags =
+        BindingFlags.SetProperty | BindingFlags.Public | BindingFlags.Instance | BindingFlags.DoNotWrapExceptions;
+
+    /// <summary>David meldet so u. a. ein unbekanntes Feld und Attachments auf Fax und Link.</summary>
+    public const int EFail = unchecked((int)0x80004005);
 
     public static object? GetProperty(object target, string name)
     {
@@ -39,14 +47,70 @@ internal static class ComHelpers
         }
     }
 
+    /// <summary>
+    /// Für Pflichtdaten: Nur ein fehlendes Member gilt als "nicht vorhanden". Jeder andere
+    /// COM-Fehler wird weitergereicht, statt den Migrationsumfang still zu verkleinern.
+    /// </summary>
+    public static bool TryGetRequiredProperty(object target, string name, out object? value)
+    {
+        value = null;
+        try
+        {
+            value = GetProperty(target, name);
+            return true;
+        }
+        catch (Exception ex) when (IsMissingMember(ex))
+        {
+            return false;
+        }
+    }
+
+    private static bool IsMissingMember(Exception exception)
+    {
+        return exception is MissingMemberException ||
+               exception.HResult is unchecked((int)0x80020006) or unchecked((int)0x80020003);
+    }
+
+    /// <summary>
+    /// Für Daten, die ins Ziel gehen oder die Identität bestimmen. Am echten David melden nicht
+    /// vorhandene Member durchgehend DISP_E_UNKNOWNNAME; jeder andere Fehler ist ein Lesefehler.
+    /// </summary>
+    public static string? GetRequiredString(object target, params string[] names)
+    {
+        return RequiredValues(target, names)
+            .Select(ToScalarString)
+            .FirstOrDefault(text => !string.IsNullOrWhiteSpace(text));
+    }
+
+    public static long? GetRequiredLong(object target, params string[] names)
+    {
+        return RequiredValues(target, names).Select(ToNullableLong).FirstOrDefault(value => value.HasValue);
+    }
+
+    public static DateTime? GetRequiredDate(object target, params string[] names)
+    {
+        return RequiredValues(target, names).Select(ToNullableDate).FirstOrDefault(value => value.HasValue);
+    }
+
+    public static bool? GetRequiredBool(object target, params string[] names)
+    {
+        return RequiredValues(target, names).Select(ToNullableBool).FirstOrDefault(value => value.HasValue);
+    }
+
+    private static IEnumerable<object> RequiredValues(object target, string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (TryGetRequiredProperty(target, name, out var value) && value is not null)
+            {
+                yield return value;
+            }
+        }
+    }
+
     public static void SetProperty(object target, string name, object? value)
     {
-        target.GetType().InvokeMember(
-            name,
-            BindingFlags.SetProperty | BindingFlags.Public | BindingFlags.Instance,
-            null,
-            target,
-            new[] { value });
+        target.GetType().InvokeMember(name, SetFlags, null, target, new[] { value });
     }
 
     public static object? Invoke(object target, string name, params object?[] args)
@@ -73,6 +137,44 @@ internal static class ComHelpers
         }
     }
 
+    /// <summary>
+    /// Für den Migrationsumfang: Eine nicht lesbare Collection oder Lücke wird zum Fehler und
+    /// verkleinert den Umfang nicht still. Alle David-Collections bieten laut Typbibliothek _NewEnum.
+    /// </summary>
+    public static IEnumerable<object> EnumerateRequired(object? collection)
+    {
+        if (collection is null)
+        {
+            yield break;
+        }
+
+        if (collection is not IEnumerable enumerable)
+        {
+            // Der Cast verschluckt den HRESULT von _NewEnum; der direkte Aufruf zeigt den echten Fehler.
+            GetProperty(collection, "_NewEnum");
+            throw new InvalidOperationException("David-Collection lässt sich nicht aufzählen.");
+        }
+
+        var declared = GetCount(collection);
+        var delivered = 0;
+        foreach (var entry in enumerable)
+        {
+            // Ein fehlschlagendes IEnumVARIANT::Next erscheint hier als null, und zwar endlos.
+            if (entry is null)
+            {
+                throw new InvalidOperationException($"David-Collection lieferte nach {delivered} Einträgen einen leeren Eintrag.");
+            }
+
+            delivered++;
+            yield return entry;
+        }
+
+        if (declared is { } expected && delivered < expected)
+        {
+            throw new InvalidOperationException($"David-Collection lieferte nur {delivered} von {expected} Einträgen.");
+        }
+    }
+
     public static IEnumerable<object> Enumerate(object? collection)
     {
         if (collection is null)
@@ -84,10 +186,14 @@ internal static class ComHelpers
         {
             foreach (var entry in enumerable)
             {
-                if (entry is not null)
+                // Ein fehlschlagendes IEnumVARIANT::Next erscheint hier als null, und zwar endlos.
+                if (entry is null)
                 {
-                    yield return entry;
+                    Console.Error.WriteLine("  WARNUNG COM-Collection vorzeitig beendet: leerer Eintrag.");
+                    yield break;
                 }
+
+                yield return entry;
             }
 
             yield break;
@@ -112,6 +218,10 @@ internal static class ComHelpers
             if (TryGetItemAt(collection, index, out var item))
             {
                 yield return item;
+            }
+            else
+            {
+                Console.Error.WriteLine($"  WARNUNG COM-Eintrag {index} von {count} nicht lesbar und übersprungen.");
             }
         }
     }
@@ -268,7 +378,7 @@ internal static class ComHelpers
 
         if (value is DateTime date)
         {
-            return date;
+            return WithoutOleZero(date);
         }
 
         if (value is bool)
@@ -286,7 +396,7 @@ internal static class ComHelpers
 
             if (DateTime.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var parsed))
             {
-                return parsed;
+                return WithoutOleZero(parsed);
             }
         }
 
@@ -294,12 +404,21 @@ internal static class ComHelpers
         {
             // OLE-Automation-Datum (double).
             var oaDate = Convert.ToDouble(value, CultureInfo.InvariantCulture);
-            return DateTime.FromOADate(oaDate);
+            return WithoutOleZero(DateTime.FromOADate(oaDate));
         }
         catch (Exception)
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// David liefert für "nicht gesetzt" den OLE-Nullwert 30.12.1899 (z. B. SendTime).
+    /// Als echtes Datum übernommen stünde er sonst als Sendezeit in Exchange.
+    /// </summary>
+    private static DateTime? WithoutOleZero(DateTime value)
+    {
+        return value.Year < 1900 ? null : value;
     }
 
     public static bool? ToNullableBool(object? value)
