@@ -29,6 +29,15 @@ public sealed class EnsureMailboxesScriptTests
     }
 
     [Fact]
+    public void Shared_mailboxes_keep_a_copy_of_sent_items()
+    {
+        var script = Script();
+
+        Assert.Contains("-MessageCopyForSentAsEnabled $true", script, StringComparison.Ordinal);
+        Assert.Contains("-MessageCopyForSendOnBehalfEnabled $true", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Warning_text_is_not_concatenated_in_argument_mode()
     {
         // Write-Warning "a" + "b" bricht in PowerShell mit einem Parameterfehler ab.

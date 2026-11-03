@@ -21,6 +21,8 @@ $permissions = 0
 $skipped = 0
 $pendingSignIn = [System.Collections.ArrayList]::new()
 $failedSignIn = [System.Collections.ArrayList]::new()
+$sentCopies = 0
+$failedSentCopy = 0
 
 # Benutzername = Mailadresse = UPN. In Exchange Online ersetzt -MicrosoftOnlineServicesID den UPN.
 # Bis die Änderung angekommen ist, warnt Exchange über die Abweichung; geprüft wird deshalb am Ende.
@@ -93,6 +95,20 @@ foreach ($target in $targets) {
         }
     }
 
+    # Was Mitglieder als oder im Auftrag dieses Postfachs senden, liegt auch in seinen Gesendeten Elementen.
+    if ([string]$target.Type -eq "shared" -and
+        (-not $mailbox -or -not $mailbox.MessageCopyForSentAsEnabled -or -not $mailbox.MessageCopyForSendOnBehalfEnabled)) {
+        try {
+            Set-Mailbox -Identity $upn -MessageCopyForSentAsEnabled $true -MessageCopyForSendOnBehalfEnabled $true -WhatIf:$WhatIf
+            Write-Host "SENT  $upn kopiert gesendete Elemente"
+            $sentCopies++
+        }
+        catch {
+            $failedSentCopy++
+            Write-Warning "Gesendete Elemente für $upn nicht aktiviert: $($_.Exception.Message)"
+        }
+    }
+
     if ($target.Aliases -and @($target.Aliases).Count -gt 0) {
         Write-Host "ALIAS $upn += $($target.Aliases -join ', ')"
         Set-Mailbox -Identity $upn -EmailAddresses @{ Add = @($target.Aliases) } -WhatIf:$WhatIf
@@ -130,4 +146,4 @@ foreach ($address in $pendingSignIn) {
 }
 
 $signInOpen = $pendingSignIn.Count + $failedSignIn.Count
-Write-Host "DONE created=$created permissions=$permissions skipped=$skipped signInOpen=$signInOpen whatIf=$($WhatIf.IsPresent)"
+Write-Host "DONE created=$created permissions=$permissions skipped=$skipped signInOpen=$signInOpen sentCopies=$sentCopies sentCopyOpen=$failedSentCopy whatIf=$($WhatIf.IsPresent)"

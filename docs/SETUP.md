@@ -192,6 +192,7 @@ Das Skript:
 - verbindet interaktiv mit Exchange Online,
 - legt fehlende **Shared Mailboxes** an und setzt den Anmeldenamen auf die Mailadresse (`Set-Mailbox -MicrosoftOnlineServicesID`). Das gilt auch für vorhandene Shared Mailboxes, deren Hauptadresse der `target.upn` entspricht; ein Alias wird nur gemeldet,
 - liest den Anmeldenamen am Ende zurück und meldet `UPN ... bestätigt`. `signInOpen` in der `DONE`-Zeile nennt, was offen blieb; dann den Befehl später erneut ausführen,
+- aktiviert bei Shared Mailboxes „Gesendete Elemente kopieren“ für „Als“ und „Im Auftrag“, auch bei vorhandenen. `sentCopyOpen` in der `DONE`-Zeile nennt, was fehlschlug,
 - setzt `target.aliases`,
 - vergibt `FullAccess` ohne Auto-Mapping an den Admin,
 - unterstützt `--dry-run`.
@@ -208,6 +209,7 @@ New-Mailbox -Shared `
   -PrimarySmtpAddress info@sg.example.com
 
 Set-Mailbox -Identity info@sg.example.com -MicrosoftOnlineServicesID info@sg.example.com
+Set-Mailbox -Identity info@sg.example.com -MessageCopyForSentAsEnabled $true -MessageCopyForSendOnBehalfEnabled $true
 
 Add-MailboxPermission `
   -Identity info@sg.example.com `
