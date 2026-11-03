@@ -3,6 +3,26 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [1.0.0](https://github.com/bauer-group/IP-David2Exchange/compare/v0.10.0...v1.0.0) (2026-11-03)
+
+### ⚠ BREAKING CHANGES
+
+* **migration:** manifests older than schema 3 are refused, because the
+  item key changed. Back up and remove the manifest, manifest-log.db and
+  eml-stage. Items already in Exchange are then sent again.
+
+### 🚀 Features
+
+* **migration:** transferred all fields and attachments of real David items ([ec62e2b](https://github.com/bauer-group/IP-David2Exchange/commit/ec62e2bbe4a150de201a31d4aab2a00f9ee6e915))
+
+### 🐛 Bug Fixes
+
+* **ews:** hardened failure handling across the transfer path ([dbddf19](https://github.com/bauer-group/IP-David2Exchange/commit/dbddf19804ec397ad223d61faf095daa15e13a81))
+* **ews:** restored settle wait after an unreadable response ([bebd16d](https://github.com/bauer-group/IP-David2Exchange/commit/bebd16da41035909952252fdec6e0f27736ece7c))
+* **ews:** stopped retrying an illegal item key on the mail path ([4c42f06](https://github.com/bauer-group/IP-David2Exchange/commit/4c42f06714b1a4b656d50be7d049533fd8f2ab0d))
+* **manifest:** replaced lone surrogates before writing to LiteDB ([1c054f4](https://github.com/bauer-group/IP-David2Exchange/commit/1c054f43a0bd90efac2c91f13f17a861cecefc13))
+* **setup:** made setup --check fail when EWS is not usable ([1f62e57](https://github.com/bauer-group/IP-David2Exchange/commit/1f62e5760002eed7e3c093263ff995f66fb43d62))
+
 ## [0.10.0](https://github.com/bauer-group/IP-David2Exchange/compare/v0.9.13...v0.10.0) (2026-11-03)
 
 ### 🚀 Features
