@@ -85,7 +85,7 @@ limits:
   limit: 3
 mailboxes:
   - id: user01
-    source: { kind: user, archivePath: "user\\@me" }
+    source: { kind: user, archivePath: "user\\@me", email: user01@example.com }
     target: { upn: user01@example.com }
     include: [mail]
 '@ | Set-Content -LiteralPath $runConfig -Encoding UTF8
