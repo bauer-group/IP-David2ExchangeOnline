@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Net;
 using System.Net.Http;
 using System.Text.RegularExpressions;
+using System.Xml;
 using Microsoft.Exchange.WebServices.Data;
 using Microsoft.Identity.Client;
 
@@ -96,12 +97,14 @@ internal static partial class EwsFailure
     }
 
     /// <summary>
-    /// Die Anfrage kann beim Server angekommen sein, ohne dass er sie zu Ende bearbeitet hat. Eine
-    /// vollständig gelesene, aber unbrauchbare Antwort gehört nicht dazu: Dann ist er bereits fertig.
+    /// Die Anfrage kann beim Server angekommen sein, ohne dass er sie zu Ende bearbeitet hat. Das gilt
+    /// auch für eine unlesbare Antwort: Ohne Längenangabe (Connection: close, HTTP/1.0) sieht eine
+    /// abgeschnittene aus wie eine vollständige, und eine fremde kann von einem Proxy stammen.
     /// </summary>
     public static bool IsTransportFailure(Exception exception)
     {
-        return exception is ServiceRequestException or HttpRequestException or TimeoutException or IOException or OperationCanceledException;
+        return exception is ServiceRequestException or HttpRequestException or TimeoutException or IOException or OperationCanceledException
+            or XmlException or ServiceXmlDeserializationException;
     }
 
     /// <summary>Anmeldung vorübergehend nicht möglich; alles andere (z. B. falsches Zertifikat) bleibt fatal.</summary>

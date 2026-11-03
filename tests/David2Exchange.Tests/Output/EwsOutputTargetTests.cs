@@ -3,6 +3,7 @@ using System.Reflection;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
+using System.Xml;
 using System.Xml.Linq;
 using David2Exchange.Output;
 using ServiceError = Microsoft.Exchange.WebServices.Data.ServiceError;
@@ -15,6 +16,8 @@ public sealed class EwsOutputTargetTests : IDisposable
 {
     private const string InboxId = "root-inbox";
     private const string SentId = "root-sentitems";
+    private const string CutOffReply = "<?xml version=\"1.0\"?><s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Header><t:ServerVer";
+    private const string ForeignReply = "<?xml version=\"1.0\"?><html><body>Proxy</body></html>";
 
     private readonly string _directory = Path.Combine(
         Path.GetTempPath(),
@@ -24,6 +27,7 @@ public sealed class EwsOutputTargetTests : IDisposable
     private readonly List<TimeSpan> _delays = new();
     private readonly List<bool> _tokenRequests = new();
     private Func<bool, string> _token = _ => "a.token1.c";
+    private Action<TimeSpan>? _onDelay;
 
     public EwsOutputTargetTests()
     {
@@ -54,6 +58,7 @@ public sealed class EwsOutputTargetTests : IDisposable
                 lock (_delays)
                 {
                     _delays.Add(delay);
+                    _onDelay?.Invoke(delay);
                 }
 
                 return Task.CompletedTask;
@@ -769,7 +774,7 @@ public sealed class EwsOutputTargetTests : IDisposable
             if (request.Operation == "CreateItem" && isFirst)
             {
                 isFirst = false;
-                return new FakeReply(StoreFirst: true, Body: "<?xml version=\"1.0\"?><s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body>");
+                return new FakeReply(StoreFirst: true, Body: CutOffReply);
             }
 
             return null;
@@ -782,8 +787,47 @@ public sealed class EwsOutputTargetTests : IDisposable
         Assert.Equal(3, _server.Items.Select(item => item.ItemKey).Distinct().Count());
         Assert.Equal(3, _server.Items.Count);
 
-        // Die Antwort kam vollständig an: Der Server ist fertig, Warten brächte nichts.
-        Assert.DoesNotContain(TimeSpan.FromSeconds(65), _delays);
+        // Ohne Längenangabe beweist das Ende der Antwort nicht, dass der Server fertig ist.
+        Assert.Contains(TimeSpan.FromSeconds(65), _delays);
+    }
+
+    [Theory]
+    [InlineData("mail", "root-inbox", CutOffReply)]
+    [InlineData("mail", "root-inbox", ForeignReply)]
+    [InlineData("calendar", "root-calendar", CutOffReply)]
+    public async Task Late_store_after_an_unreadable_response_is_found_instead_of_sent_again(string kind, string folderId, string reply)
+    {
+        await using var target = await OpenAsync();
+        var item = kind == "mail" ? Mail("a") : NonMail(kind, "cal", "Termin");
+        var isFirst = true;
+        _server.Intercept = request =>
+        {
+            if (request.Operation == "CreateItem" && isFirst)
+            {
+                isFirst = false;
+                return new FakeReply(Body: reply);
+            }
+
+            return null;
+        };
+
+        // Der Server speichert erst 30 s nach seiner Antwort, die gemeldeten Wartezeiten sind die Uhr.
+        var waited = TimeSpan.Zero;
+        _onDelay = delay =>
+        {
+            var before = waited;
+            waited += delay;
+            if (before < TimeSpan.FromSeconds(30) && waited >= TimeSpan.FromSeconds(30))
+            {
+                _server.Seed(folderId, StoredKey(item));
+            }
+        };
+
+        var results = await target.WriteBatchAsync(new[] { item }, CancellationToken.None);
+
+        Assert.True(results[0].AlreadyPresent, results[0].Error);
+        Assert.Single(_server.Operations, operation => operation == "CreateItem");
+        Assert.Single(_server.Items);
     }
 
     [Fact]
@@ -1178,6 +1222,9 @@ public sealed class EwsOutputTargetTests : IDisposable
     {
         Assert.Equal(EwsFailureKind.Permanent, EwsFailure.Classify(new ServiceXmlSerializationException("x")));
         Assert.Equal(EwsFailureKind.Ambiguous, EwsFailure.Classify(new ServiceXmlDeserializationException("x")));
+        Assert.True(EwsFailure.IsTransportFailure(new ServiceXmlDeserializationException("x")));
+        Assert.True(EwsFailure.IsTransportFailure(new XmlException("x")));
+        Assert.False(EwsFailure.IsTransportFailure(new ServiceXmlSerializationException("x")));
     }
 
     [Fact]
