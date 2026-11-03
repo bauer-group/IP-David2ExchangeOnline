@@ -19,6 +19,23 @@ $targets = Get-Content -LiteralPath $InputJson -Raw | ConvertFrom-Json
 $created = 0
 $permissions = 0
 $skipped = 0
+$pendingSignIn = [System.Collections.ArrayList]::new()
+$failedSignIn = [System.Collections.ArrayList]::new()
+
+# Benutzername = Mailadresse = UPN. In Exchange Online ersetzt -MicrosoftOnlineServicesID den UPN.
+# Bis die Änderung angekommen ist, warnt Exchange über die Abweichung; geprüft wird deshalb am Ende.
+function Set-SignInName([string]$Address) {
+    try {
+        Set-Mailbox -Identity $Address -MicrosoftOnlineServicesID $Address -WarningAction SilentlyContinue -WhatIf:$WhatIf
+        if (-not $WhatIf) {
+            [void]$pendingSignIn.Add($Address)
+        }
+    }
+    catch {
+        [void]$failedSignIn.Add($Address)
+        Write-Warning "Anmeldename von $Address nicht gesetzt: $($_.Exception.Message)"
+    }
+}
 
 foreach ($target in $targets) {
     $upn = [string]$target.Upn
@@ -38,7 +55,7 @@ foreach ($target in $targets) {
             $displayName = if ($target.DisplayName) { $target.DisplayName } else { $upn }
             $alias = if ($target.Alias) { $target.Alias } else { ($upn -split "@")[0] }
             Write-Host "NEW   Shared Mailbox $upn"
-            New-Mailbox `
+            $null = New-Mailbox `
                 -Shared `
                 -Name $displayName `
                 -DisplayName $displayName `
@@ -53,13 +70,7 @@ foreach ($target in $targets) {
             }
 
             # -MicrosoftOnlineServicesID gehört nicht zum Parametersatz von New-Mailbox -Shared.
-            # Die Übertragung braucht den Anmeldenamen nicht, deshalb bricht ein Fehler hier nichts ab.
-            try {
-                Set-Mailbox -Identity $upn -MicrosoftOnlineServicesID $upn
-            }
-            catch {
-                Write-Warning "Anmeldename von $upn nicht gesetzt: $($_.Exception.Message) Bei Bedarf im Microsoft 365 Admin Center ändern."
-            }
+            Set-SignInName $upn
         }
         else {
             Write-Warning "User-Mailbox $upn fehlt; bitte lizenzieren/anlegen. Kein automatisches New-Mailbox für User."
@@ -72,7 +83,14 @@ foreach ($target in $targets) {
         [string]$target.Type -eq "shared" -and
         -not [string]::IsNullOrWhiteSpace($mailbox.UserPrincipalName) -and
         $mailbox.UserPrincipalName -ne $upn) {
-        Write-Warning "Shared Mailbox $upn hat UPN '$($mailbox.UserPrincipalName)'. Der Anmeldename muss manuell auf $upn geändert werden."
+        # Get-Mailbox findet auch Aliasse; der Anmeldename soll aber die Hauptadresse sein.
+        if ([string]$mailbox.PrimarySmtpAddress -eq $upn) {
+            Write-Host "UPN   $upn (bisher $($mailbox.UserPrincipalName))"
+            Set-SignInName $upn
+        }
+        else {
+            Write-Warning "$upn ist nur ein Alias von $($mailbox.PrimarySmtpAddress); der Anmeldename bleibt unverändert."
+        }
     }
 
     if ($target.Aliases -and @($target.Aliases).Count -gt 0) {
@@ -82,7 +100,7 @@ foreach ($target in $targets) {
 
     if (-not [string]::IsNullOrWhiteSpace($AdminUpn)) {
         Write-Host "PERM  $upn -> $AdminUpn FullAccess"
-        Add-MailboxPermission `
+        $null = Add-MailboxPermission `
             -Identity $upn `
             -User $AdminUpn `
             -AccessRights FullAccess `
@@ -93,4 +111,23 @@ foreach ($target in $targets) {
     }
 }
 
-Write-Host "DONE created=$created permissions=$permissions skipped=$skipped whatIf=$($WhatIf.IsPresent)"
+# Erst das Zurücklesen zeigt, ob Benutzername, Mailadresse und UPN wirklich übereinstimmen.
+for ($attempt = 0; $pendingSignIn.Count -gt 0 -and $attempt -lt 12; $attempt++) {
+    foreach ($address in @($pendingSignIn)) {
+        if ((Get-Mailbox -Identity $address -ErrorAction SilentlyContinue).UserPrincipalName -eq $address) {
+            Write-Host "UPN   $address bestätigt"
+            $pendingSignIn.Remove($address)
+        }
+    }
+
+    if ($pendingSignIn.Count -gt 0) {
+        Start-Sleep -Seconds 15
+    }
+}
+
+foreach ($address in $pendingSignIn) {
+    Write-Warning "Anmeldename von $address noch nicht bestätigt. Den Befehl später erneut ausführen."
+}
+
+$signInOpen = $pendingSignIn.Count + $failedSignIn.Count
+Write-Host "DONE created=$created permissions=$permissions skipped=$skipped signInOpen=$signInOpen whatIf=$($WhatIf.IsPresent)"

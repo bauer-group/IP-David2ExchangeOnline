@@ -20,6 +20,15 @@ public sealed class EnsureMailboxesScriptTests
     }
 
     [Fact]
+    public void Sign_in_name_is_set_on_existing_mailboxes_and_confirmed_by_reading_it_back()
+    {
+        var script = Script();
+
+        Assert.Equal(3, Regex.Count(script, "Set-SignInName"));
+        Assert.Contains("UserPrincipalName -eq $address", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Warning_text_is_not_concatenated_in_argument_mode()
     {
         // Write-Warning "a" + "b" bricht in PowerShell mit einem Parameterfehler ab.

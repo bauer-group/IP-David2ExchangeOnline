@@ -210,7 +210,7 @@ david2exchange mailboxes ensure --config migration.yaml `
   --wave wave-1 --admin-upn admin@example.com --dry-run
 ```
 
-Das Skript verbindet sich interaktiv mit Exchange Online, legt fehlende **Shared Mailboxes** an (`New-Mailbox -Shared`), setzt danach den Anmeldenamen per `Set-Mailbox -MicrosoftOnlineServicesID` auf die Mailadresse (scheitert nur das, gibt es eine Warnung), ergänzt `aliases` per `Set-Mailbox` und vergibt `FullAccess` ohne Auto-Mapping an den Admin. User-Mailboxes werden nicht automatisch erzeugt, weil dafür Lizenzierung nötig ist.
+Das Skript verbindet sich interaktiv mit Exchange Online, legt fehlende **Shared Mailboxes** an (`New-Mailbox -Shared`), setzt den Anmeldenamen per `Set-Mailbox -MicrosoftOnlineServicesID` auf die Mailadresse und bestätigt ihn durch Zurücklesen, auch bei vorhandenen Shared Mailboxes, ergänzt `aliases` per `Set-Mailbox` und vergibt `FullAccess` ohne Auto-Mapping an den Admin. User-Mailboxes werden nicht automatisch erzeugt, weil dafür Lizenzierung nötig ist.
 
 ## 7. Wellen validieren
 
