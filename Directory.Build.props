@@ -10,7 +10,7 @@
     <Product>david2exchange</Product>
     <Description>BAUER GROUP — Tobit-David-zu-Exchange-Online-Migrationstool (DvApi32/EWS, x86).</Description>
     <Copyright>Copyright © BAUER GROUP $([System.DateTime]::UtcNow.ToString("yyyy"))</Copyright>
-    <Version>1.2.0</Version>
+    <Version>1.2.1</Version>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <RepositoryUrl>https://github.com/bauer-group/IP-David2Exchange</RepositoryUrl>

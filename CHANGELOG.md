@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [1.2.1](https://github.com/bauer-group/IP-David2Exchange/compare/v1.2.0...v1.2.1) (2026-11-04)
+
+### 🐛 Bug Fixes
+
+* **migration:** stopped treating series mail entries as duplicates ([635c90d](https://github.com/bauer-group/IP-David2Exchange/commit/635c90d239a140db686c42b119bd35a147840abe))
+
 ## [1.2.0](https://github.com/bauer-group/IP-David2Exchange/compare/v1.1.0...v1.2.0) (2026-11-03)
 
 ### 🚀 Features
