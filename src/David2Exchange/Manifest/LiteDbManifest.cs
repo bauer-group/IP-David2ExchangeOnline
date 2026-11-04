@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 using David2Exchange.Cli;
+using David2Exchange.Source;
 using LiteDB;
 
 namespace David2Exchange.Manifest;
@@ -12,6 +13,7 @@ public sealed class LiteDbManifest : IDisposable
     private readonly ILiteCollection<ItemDocument> _items;
     private readonly ILiteCollection<RunDocument> _runs;
     private readonly ILiteCollection<WalkDocument> _walks;
+    private readonly ILiteCollection<FileOwnerDocument> _fileOwners;
     private readonly string _path;
     private readonly object _gate = new();
 
@@ -44,6 +46,7 @@ public sealed class LiteDbManifest : IDisposable
         _items = _database.GetCollection<ItemDocument>("items");
         _runs = _database.GetCollection<RunDocument>("runs");
         _walks = _database.GetCollection<WalkDocument>("walks");
+        _fileOwners = _database.GetCollection<FileOwnerDocument>("fileOwners");
         _items.EnsureIndex(x => x.MailboxId);
         _items.EnsureIndex(x => x.State);
         _items.EnsureIndex(x => x.ReceivedLocal);
@@ -226,6 +229,7 @@ public sealed class LiteDbManifest : IDisposable
     /// Sucht die bereits übertragene Kopie eines in David verschobenen Items. Die Dateinummer allein
     /// reicht nicht: Am echten David kommt dieselbe Nummer in anderen Archiven mit anderem Inhalt vor.
     /// Passt nichts, wird gesendet; im Zweifel entsteht also eine zweite Kopie, kein Verlust.
+    /// Einträge einer Serienmail teilen sich die Datei, zählen aber nur mit gleichen Empfängern als Kopie.
     /// </summary>
     public ItemDocument? FindImportedCopy(ItemDocument item, string targetName)
     {
@@ -236,7 +240,8 @@ public sealed class LiteDbManifest : IDisposable
 
         lock (_gate)
         {
-            return _items.Find(x => x.FileToken == item.FileToken).FirstOrDefault(other =>
+            var recipients = RecipientsOf(item.Key);
+            return _items.Find(x => x.FileToken == item.FileToken).ToList().FirstOrDefault(other =>
                 other.Key != item.Key &&
                 other.MailboxId == item.MailboxId &&
                 other.State == ItemState.Imported &&
@@ -244,8 +249,33 @@ public sealed class LiteDbManifest : IDisposable
                 other.ItemType == item.ItemType &&
                 other.Subject == item.Subject &&
                 other.ReceivedLocal is { } date &&
-                Math.Abs((date - received).TotalSeconds) < 2);
+                Math.Abs((date - received).TotalSeconds) < 2 &&
+                (recipients is null || recipients == RecipientsOf(other.Key)));
         }
+    }
+
+    /// <summary>
+    /// Liefert die Empfänger, die die Kennung ohne Zusatz tragen, und legt sie beim ersten Aufruf fest.
+    /// Festlegen heißt: Der erste Eintrag der David-Reihenfolge behält die bisherige Kennung und damit
+    /// seinen Importstatus.
+    /// </summary>
+    public string ClaimFileOwner(string key, string recipientToken)
+    {
+        lock (_gate)
+        {
+            if (_fileOwners.FindById(key) is { } owner)
+            {
+                return owner.RecipientToken;
+            }
+
+            _fileOwners.Insert(new FileOwnerDocument { Key = key, RecipientToken = recipientToken });
+            return recipientToken;
+        }
+    }
+
+    private string? RecipientsOf(string key)
+    {
+        return DavidItemIdentity.RecipientTokenOf(key) ?? _fileOwners.FindById(key)?.RecipientToken;
     }
 
     /// <summary>Übertragene Items, die der Durchlauf seit diesem Zeitpunkt nicht mehr gesehen hat.</summary>

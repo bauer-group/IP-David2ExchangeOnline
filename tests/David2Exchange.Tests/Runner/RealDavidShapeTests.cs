@@ -166,6 +166,72 @@ public sealed class RealDavidShapeTests : IDisposable
     }
 
     [Fact]
+    public void Series_mail_from_an_older_run_reaches_the_missing_recipients_without_resending()
+    {
+        // Stand vor der Empfängerkennung: Ein Eintrag ist übertragen, die anderen gelten als Wiederholung.
+        var addresses = new[] { "a@example.com", "b@example.com", "c@example.com" };
+        var entries = addresses.Select(_ => _out.Add("2", "S", "Serie")).ToList();
+        Assert.Equal(0, Run());
+        Assert.Single(_output.Items);
+        Assert.Equal(2, Rows().Count(row => row.Key.Contains("#dup", StringComparison.Ordinal)));
+        var imported = Assert.Single(Rows(), row => row.State == ItemState.Imported);
+        using (var manifest = new LiteDbManifest(Config().Staging.Manifest))
+        {
+            manifest.Database.DropCollection("fileOwners");
+        }
+
+        for (var i = 0; i < entries.Count; i++)
+        {
+            entries[i].Set("To", addresses[i]);
+        }
+
+        Assert.Equal(0, Run());
+        Assert.Equal(3, _output.Items.Count);
+
+        // Delta-Lauf: Alle Kennungen sind stabil, der zuerst übertragene Eintrag behält seine.
+        Assert.Equal(0, Run());
+        Assert.Equal(3, _output.Items.Count);
+        Assert.Contains(Rows(), row => row.Key == imported.Key && row.State == ItemState.Imported);
+        Assert.DoesNotContain(Rows(), row => row.State == ItemState.Skipped);
+        Assert.Equal(0, Verify());
+    }
+
+    [Fact]
+    public void Series_entries_keep_their_identity_when_new_entries_come_first_and_true_repeats_stay_single()
+    {
+        _out.Add("2", "S", "Serie", item => item.Set("To", "a@example.com"));
+        _out.Add("2", "S", "Serie", item => item.Set("To", "b@example.com"));
+        Assert.Equal(0, Run());
+        Assert.Equal(2, _output.Items.Count);
+
+        // David liefert neueste zuerst; die neuen Einträge stehen also vor den übertragenen.
+        _out.Add("2", "S", "Serie", item => item.Set("To", "c@example.com"));
+        _out.Add("2", "S", "Serie", item => item.Set("To", "a@example.com"));
+        Assert.Equal(0, Run());
+
+        Assert.Equal(3, _output.Items.Count);
+        var skipped = Assert.Single(Rows(), row => row.State == ItemState.Skipped);
+        Assert.Contains("mehrfach", skipped.LastError, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Moved_series_entries_are_not_sent_again()
+    {
+        _in.Add("2", "S", "Serie", item => item.Set("To", "a@example.com"));
+        _in.Add("2", "S", "Serie", item => item.Set("To", "b@example.com"));
+        Assert.Equal(0, Run());
+        Assert.Equal(2, _output.Items.Count);
+
+        _in.RemoveAt(0);
+        _in.RemoveAt(0);
+        _out.Add("2", "S", "Serie", item => item.Set("To", "a@example.com"));
+        _out.Add("2", "S", "Serie", item => item.Set("To", "b@example.com"));
+        Assert.Equal(0, Run());
+
+        Assert.Equal(2, _output.Items.Count);
+    }
+
+    [Fact]
     public void Same_file_number_with_other_content_in_another_archive_is_still_sent()
     {
         // Gemessen: 13 Dateinummern kamen in mehreren Archiven vor, alle mit anderem Inhalt.

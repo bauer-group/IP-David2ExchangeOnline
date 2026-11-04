@@ -19,11 +19,35 @@ public static partial class DavidItemIdentity
     /// <summary>Präfix inhaltsbasierter Kennungen; nur diese können mehrfach vorkommen.</summary>
     public const string ContentPrefix = "h:";
 
+    /// <summary>Trennt in der Manifest-Kennung die David-Datei vom Empfänger-Hash.</summary>
+    public const string RecipientMarker = "#to:";
+
     public static string Of(IDavidItem item)
     {
-        return FileToken(item.SourceFile)
-               ?? FileToken(item.FaxImagePath)
-               ?? ContentToken(item);
+        return FileTokenOf(item) ?? ContentToken(item);
+    }
+
+    public static string? FileTokenOf(IDavidItem item)
+    {
+        return FileToken(item.SourceFile) ?? FileToken(item.FaxImagePath);
+    }
+
+    /// <summary>
+    /// Eine Serienmail legt je Empfänger einen eigenen Eintrag an, und alle nennen dieselbe Textdatei.
+    /// Erst die Empfänger trennen sie von einer echten Doppelung. Die Schreibweise zählt mit: David
+    /// führt Carl@x.de und carl@x.de als zwei Sendungen, und im Zweifel entsteht kein Verlust.
+    /// </summary>
+    public static string RecipientToken(IDavidItem item)
+    {
+        var recipients = string.Join('\u001f', Get(item, "To"), Get(item, "Recipients"), Get(item, "CC"));
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(recipients)), 0, 12).ToLowerInvariant();
+    }
+
+    /// <summary>Der Empfänger-Hash aus einer Manifest-Kennung; null, wenn sie keinen trägt.</summary>
+    public static string? RecipientTokenOf(string key)
+    {
+        var index = key.LastIndexOf(RecipientMarker, StringComparison.Ordinal);
+        return index < 0 ? null : key[(index + RecipientMarker.Length)..];
     }
 
     /// <summary>

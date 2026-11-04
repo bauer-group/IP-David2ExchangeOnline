@@ -103,7 +103,7 @@ public sealed class MigrationRunner
         CancellationToken cancellationToken)
     {
         var archive = OpenMailboxArchive(session, mailbox);
-        var keys = new ItemKeys(mailbox.Source.ArchivePath);
+        var keys = new ItemKeys(mailbox.Source.ArchivePath, manifest);
         var count = 0;
         var errors = 0;
 
@@ -560,7 +560,7 @@ public sealed class MigrationRunner
         Action<ItemDocument> enqueue,
         CancellationToken cancellationToken)
     {
-        var keys = new ItemKeys(mailbox.Source.ArchivePath);
+        var keys = new ItemKeys(mailbox.Source.ArchivePath, manifest);
         var walkStartedUtc = DateTime.UtcNow;
         var walked = 0;
         var handled = 0;
@@ -660,6 +660,7 @@ public sealed class MigrationRunner
         if (isComplete)
         {
             CloseVanishedRows(manifest, mailbox, keys, targetName, enqueue);
+            RetireFormerRepeatRows(manifest, mailbox, keys);
 
             var notSeen = manifest.CountImportedNotSeenSince(mailbox.Id, walkStartedUtc);
             if (notSeen > 0)
@@ -714,6 +715,21 @@ public sealed class MigrationRunner
         if (closed > 0)
         {
             Console.WriteLine($"  HINWEIS {mailbox.Id}: {closed} offene Zeilen haben keine Quelle mehr und wurden geschlossen.");
+        }
+    }
+
+    /// <summary>
+    /// Frühere Läufe führten Serieneinträge als Wiederholung. Sie laufen jetzt unter eigener Kennung;
+    /// die alte Zeile nennte im Report sonst weiter einen Grund, der nicht mehr gilt.
+    /// </summary>
+    private static void RetireFormerRepeatRows(LiteDbManifest manifest, MailboxMapping mailbox, ItemKeys keys)
+    {
+        foreach (var row in manifest.GetByState(ItemState.Skipped, mailbox.Id)
+                     .Where(row => row.Key.Contains(ItemKeys.RepeatMarker, StringComparison.Ordinal) && !keys.WasIssued(row.Key)))
+        {
+            row.State = ItemState.NotInSource;
+            row.LastError = "Frühere Zeile eines Eintrags, der jetzt unter eigener Kennung geführt wird.";
+            manifest.Save(row);
         }
     }
 
@@ -1164,46 +1180,85 @@ public sealed class MigrationRunner
               (item.Type.Trim() == "3" && !string.IsNullOrWhiteSpace(item.Properties.GetValueOrDefault("To")));
     }
 
-    internal sealed record WalkEntry(IDavidItem Item, string ArchivePath, string FolderPath);
+    internal sealed record WalkEntry(IDavidItem Item, string ArchivePath, string FolderPath, IReadOnlySet<string> SharedFiles);
 
     /// <summary>Vergibt je Lauf eindeutige Manifest-Schlüssel für ein Postfach.</summary>
     private sealed class ItemKeys
     {
+        public const string RepeatMarker = "#dup";
+
         private readonly string _sourcePath;
+        private readonly LiteDbManifest? _manifest;
         private readonly Dictionary<string, int> _seen = new(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> _issued = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, (string Owner, HashSet<string> Recipients)> _series = new(StringComparer.OrdinalIgnoreCase);
 
         /// <summary>
         /// Die Quelle statt der Postfach-ID: Die ID ist nur ein Name in der Config, und ihre Änderung
         /// sendete das ganze Postfach erneut. Der Pfad bleibt Teil der Kennung, weil ArchivePath auf
         /// einen Anzeigenamen zurückfallen kann, den sich zwei Benutzer teilen.
         /// </summary>
-        public ItemKeys(string sourcePath)
+        public ItemKeys(string sourcePath, LiteDbManifest? manifest)
         {
             _sourcePath = DavidArchivePaths.Normalize(sourcePath);
+            _manifest = manifest;
         }
 
         public bool WasIssued(string key) => _issued.Contains(key);
 
         /// <summary>
         /// Inhaltsbasierte Kennungen dürfen sich wiederholen (z. B. identische Kontakte) und werden
-        /// durchnummeriert. Dieselbe David-Datei wird nicht doppelt gesendet, bekommt aber eine eigene
-        /// Zeile im Manifest, damit die Wiederholung nachvollziehbar bleibt.
+        /// durchnummeriert. Dieselbe David-Datei mit denselben Empfängern wird nicht doppelt gesendet,
+        /// bekommt aber eine eigene Zeile im Manifest, damit die Wiederholung nachvollziehbar bleibt.
         /// </summary>
         public (string Key, bool IsRepeatedFile) Next(WalkEntry entry)
         {
             var token = DavidItemIdentity.Of(entry.Item);
             var key = ManifestText($"{_sourcePath}|{entry.ArchivePath}|{token}");
             _seen.TryGetValue(key, out var occurrences);
-            _seen[key] = occurrences + 1;
 
-            var result = occurrences == 0
-                ? (key, false)
-                : token.StartsWith(DavidItemIdentity.ContentPrefix, StringComparison.Ordinal)
-                    ? ($"{key}#{occurrences + 1}", false)
-                    : ($"{key}#dup{occurrences + 1}", true);
-            _issued.Add(result.Item1);
+            (string Key, bool IsRepeatedFile) result;
+            if (token.StartsWith(DavidItemIdentity.ContentPrefix, StringComparison.Ordinal))
+            {
+                result = occurrences == 0 ? (key, false) : ($"{key}#{occurrences + 1}", false);
+            }
+            else if (entry.SharedFiles.Contains(token))
+            {
+                result = NextOfSharedFile(key, occurrences, entry.Item);
+            }
+            else
+            {
+                // Ohne Vorlauf-Treffer (Lesefehler dort) lässt sich nichts vergleichen; die Warnung bleibt sichtbar.
+                result = occurrences == 0 ? (key, false) : ($"{key}{RepeatMarker}{occurrences + 1}", true);
+            }
+
+            _seen[key] = occurrences + 1;
+            _issued.Add(result.Key);
             return result;
+        }
+
+        /// <summary>
+        /// Bestehende Kennungen bleiben unverändert, damit ein Delta-Lauf nichts erneut sendet: Die
+        /// festgelegten Empfänger behalten die Kennung ohne Zusatz, alle anderen bekommen eine vom
+        /// Empfänger abgeleitete. Sie hängt nicht von der Position ab und bleibt über Läufe gleich.
+        /// </summary>
+        private (string Key, bool IsRepeatedFile) NextOfSharedFile(string key, int occurrences, IDavidItem item)
+        {
+            var recipients = DavidItemIdentity.RecipientToken(item);
+            if (!_series.TryGetValue(key, out var series))
+            {
+                series = (_manifest?.ClaimFileOwner(key, recipients) ?? recipients, new HashSet<string>(StringComparer.Ordinal));
+                _series[key] = series;
+            }
+
+            if (!series.Recipients.Add(recipients))
+            {
+                return ($"{key}{RepeatMarker}{occurrences + 1}", true);
+            }
+
+            return recipients == series.Owner
+                ? (key, false)
+                : ($"{key}{DavidItemIdentity.RecipientMarker}{recipients}", false);
         }
     }
 
@@ -1276,6 +1331,34 @@ public sealed class MigrationRunner
         return FolderMapping.IsKnownRoot(archive.FolderKey) ? archive.FolderKey : null;
     }
 
+    /// <summary>
+    /// Findet die Dateien, die sich mehrere Einträge eines Archivs teilen (Serienmails). Der Vorlauf
+    /// ist nötig: Items gelten nur bis zum nächsten Schleifenschritt, und die Empfänger jeder Mail zu
+    /// lesen wäre zu teuer. So liest auch der erste Eintrag einer Serie seine Empfänger, alle anderen
+    /// Mails nicht. Lesefehler meldet der eigentliche Durchlauf, der dieselben Einträge liest.
+    /// </summary>
+    private static HashSet<string> FindSharedFiles(IDavidArchive archive, string path)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var shared = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in Guarded(() => archive.Items, path, (_, _) => { }))
+        {
+            try
+            {
+                if (DavidItemIdentity.FileTokenOf(item) is { } token && !seen.Add(token))
+                {
+                    shared.Add(token);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                Console.Error.WriteLine($"  WARNUNG {path}: Vorlauf konnte ein Item nicht lesen: {ex.Message}");
+            }
+        }
+
+        return shared;
+    }
+
     private static IEnumerable<WalkEntry> WalkCore(
         IDavidArchive archive,
         string rootPath,
@@ -1291,9 +1374,10 @@ public sealed class MigrationRunner
             yield break;
         }
 
+        var sharedFiles = FindSharedFiles(archive, path);
         foreach (var item in Guarded(() => archive.Items, path, onArchiveError))
         {
-            yield return new WalkEntry(item, path, folderPath);
+            yield return new WalkEntry(item, path, folderPath, sharedFiles);
         }
 
         foreach (var subArchive in Guarded(() => archive.SubArchives, path, onArchiveError))
@@ -1398,7 +1482,11 @@ public sealed class MigrationRunner
     private static string? FileTokenOf(string key)
     {
         var token = key[(key.LastIndexOf('|') + 1)..];
-        return token.StartsWith(DavidItemIdentity.ContentPrefix, StringComparison.Ordinal) || token.Contains('#')
+
+        // Auch Serieneinträge bleiben als verschobene Kopie erkennbar; FindImportedCopy vergleicht die Empfänger.
+        var recipients = token.IndexOf(DavidItemIdentity.RecipientMarker, StringComparison.Ordinal);
+        token = recipients < 0 ? token : token[..recipients];
+        return token.StartsWith(DavidItemIdentity.ContentPrefix, StringComparison.Ordinal) || token.Contains('#', StringComparison.Ordinal)
             ? null
             : token;
     }

@@ -41,6 +41,19 @@ public sealed class ItemDocument
     public string? StagedForUpn { get; set; }
 }
 
+/// <summary>
+/// Welche Empfänger die Kennung ohne Zusatz tragen, wenn sich mehrere Einträge eine David-Datei
+/// teilen. Hält die Zuordnung unabhängig von der Reihenfolge in David. Eigene Sammlung, weil Worker
+/// ihre Kopie der Item-Zeile speichern und ein Feld dort wieder überschreiben würden.
+/// </summary>
+public sealed class FileOwnerDocument
+{
+    [BsonId]
+    public string Key { get; set; } = "";
+
+    public string RecipientToken { get; set; } = "";
+}
+
 /// <summary>Nachweis, dass ein Postfach zuletzt vollständig gelesen wurde.</summary>
 public sealed class WalkDocument
 {
