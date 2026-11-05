@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [1.2.3](https://github.com/bauer-group/IP-David2Exchange/compare/v1.2.2...v1.2.3) (2026-11-05)
+
+### 🐛 Bug Fixes
+
+* **runtime:** enabled compaction of the large object heap ([1c3620d](https://github.com/bauer-group/IP-David2Exchange/commit/1c3620d3476d3dc454089241df8d6a1c53f5cb97))
+
 ## [1.2.2](https://github.com/bauer-group/IP-David2Exchange/compare/v1.2.1...v1.2.2) (2026-11-05)
 
 ### 🐛 Bug Fixes
