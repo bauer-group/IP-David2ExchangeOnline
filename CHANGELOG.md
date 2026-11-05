@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [1.2.2](https://github.com/bauer-group/IP-David2Exchange/compare/v1.2.1...v1.2.2) (2026-11-05)
+
+### 🐛 Bug Fixes
+
+* **transfer:** capped the bytes all workers send at once ([a715586](https://github.com/bauer-group/IP-David2Exchange/commit/a715586ead8f126dc7392d0e73c286a1bdfce0a3))
+
 ## [1.2.1](https://github.com/bauer-group/IP-David2Exchange/compare/v1.2.0...v1.2.1) (2026-11-04)
 
 ### 🐛 Bug Fixes
