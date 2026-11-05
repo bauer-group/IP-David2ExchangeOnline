@@ -2,8 +2,8 @@
 namespace David2Exchange.Runner;
 
 /// <summary>
-/// Begrenzt die Bytes, die alle Worker zusammen gleichzeitig senden. Ein gesendetes Byte belegt im
-/// x86-Prozess gemessen rund das Sechs- bis Siebenfache (EML, Base64, XML, Large Object Heap).
+/// Begrenzt die Bytes, die alle Worker zusammen gleichzeitig senden. Ein Item belegt beim Senden im
+/// x86-Prozess ein Mehrfaches seiner Größe; gemessen braucht ein 100-MB-Item rund 550 MB.
 /// <para>
 /// Die Reihenfolge bleibt erhalten, damit laufend kleine Batches einen großen nicht aushungern. Was
 /// größer ist als das Budget, belegt es ganz und läuft dadurch allein.

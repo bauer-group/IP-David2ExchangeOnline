@@ -12,7 +12,14 @@
     <RootNamespace>David2Exchange</RootNamespace>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <!-- 2 GB address space: only blocking collections can compact the large object heap. -->
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Measured with 8 workers: 988 MB peak without, 299 MB with both GC settings. -->
+    <RuntimeHostConfigurationOption Include="System.GC.ConserveMemory" Value="5" />
+  </ItemGroup>
 
   <!-- Single-file self-contained only for per-RID publish. Normal build stays framework-dependent. -->
   <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''">

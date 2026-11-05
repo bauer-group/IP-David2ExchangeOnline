@@ -168,7 +168,7 @@ public sealed class LimitsConfig
 
     /// <summary>
     /// EML-Größe, die alle Worker zusammen gleichzeitig senden. Der x86-Prozess hat nur 2 GB Adressraum,
-    /// und ein gesendetes Byte belegt gemessen das Sechs- bis Siebenfache. Normale Mails erreichen die Grenze nicht.
+    /// und ein 100-MB-Item braucht beim Senden gemessen rund 550 MB. Kleine Mails erreichen die Grenze nicht.
     /// </summary>
     public int MaxInFlightMegabytes { get; set; } = 40;
 
