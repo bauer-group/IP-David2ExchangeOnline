@@ -26,6 +26,7 @@ limits:
   workers: 8                       # parallele EWS-Worker (1-16)
   batchSize: 20                    # Nachrichten je CreateItem-Aufruf (1-100)
   maxBatchMegabytes: 20            # EML-Größe je Batch; ein größeres Item läuft allein
+  maxInFlightMegabytes: 40         # EML-Größe aller Worker zusammen; schützt den x86-Adressraum
 
 mailboxes:
   - id: user01

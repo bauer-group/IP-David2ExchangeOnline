@@ -115,6 +115,11 @@ public sealed class MigrationConfig
         {
             throw new CliException("limits.maxBatchMegabytes muss >= 1 sein.");
         }
+
+        if (Limits.MaxInFlightMegabytes < 1)
+        {
+            throw new CliException("limits.maxInFlightMegabytes muss >= 1 sein.");
+        }
     }
 }
 
@@ -160,6 +165,12 @@ public sealed class LimitsConfig
 
     /// <summary>Maximale EML-Größe je Batch; ein einzelnes größeres Item läuft allein.</summary>
     public int MaxBatchMegabytes { get; set; } = 20;
+
+    /// <summary>
+    /// EML-Größe, die alle Worker zusammen gleichzeitig senden. Der x86-Prozess hat nur 2 GB Adressraum,
+    /// und ein gesendetes Byte belegt gemessen das Sechs- bis Siebenfache. Normale Mails erreichen die Grenze nicht.
+    /// </summary>
+    public int MaxInFlightMegabytes { get; set; } = 40;
 
     public string Wave { get; set; } = "default";
 }

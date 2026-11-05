@@ -95,6 +95,7 @@ limits:
   workers: 8                           # parallele EWS-Worker (1-16)
   batchSize: 20                        # Nachrichten je CreateItem-Aufruf (1-100)
   maxBatchMegabytes: 20                # EML-Größe je Batch; ein größeres Item läuft allein
+  maxInFlightMegabytes: 40             # EML-Größe aller Worker zusammen; schützt den x86-Adressraum
 
 mailboxes:
   - id: kbauer                         # eindeutig, nur ein Name: Umbenennen sendet nichts erneut
@@ -153,7 +154,7 @@ mailboxes:
 - **Aufgaben:** Betreff, Text, Beginn, Fälligkeit, Status, Priorität, Fortschritt und Erledigungsdatum. Fehlt das Erledigungsdatum einer erledigten Aufgabe, gilt die letzte Änderung in David.
 - **Verschobene und gelöschte Items:** Exchange wird nachträglich nie geändert. Ein in David verschobenes Item mit gleicher Datei, gleichem Typ, Betreff und Datum bleibt im bisherigen Zielordner und steht als `skipped` im Report; ändert David einen dieser Werte, kommt es ein zweites Mal an. Zeilen, deren Item nach einem vollständigen Lesen fehlt, werden `NotInSource` und blockieren `verify` nicht; kommt das Item zurück, geht es normal weiter. Ein geänderter Kontakt hat keine David-Datei: Neuer Name oder neue Mailadresse ergeben einen zweiten Kontakt, andere Änderungen werden nicht übertragen.
 - **Lesefehler:** Ein COM-Fehler gilt nie als „keine Daten“. Ein nicht lesbares Item, ein leerer Eintrag in einer David-Collection oder ein nicht lesbares Archiv hält die übrigen nicht auf, das Postfach gilt danach aber als fehlgeschlagen, und `verify` bleibt rot. Bleibt die Lücke dauerhaft, das Archiv per `excludeArchives` ausschließen. Der Archivkatalog für `config create`, `sources` und `unpack` ist strikt: Eine Lücke dort bricht den Befehl ab, statt Benutzer still auszulassen.
-- **Speicher:** Die Queue ist begrenzt; das Postfach wird nie komplett geladen. Termine, Kontakte und Aufgaben behalten ihre Eigenschaften im Manifest, Mails nur ihre EML-Datei.
+- **Speicher:** Die Queue ist begrenzt; das Postfach wird nie komplett geladen. Termine, Kontakte und Aufgaben behalten ihre Eigenschaften im Manifest, Mails nur ihre EML-Datei. Der x86-Prozess hat 2 GB Adressraum, und ein gesendetes Byte belegt gemessen das Sechs- bis Siebenfache: 8 Worker mit je 20 × 1 MB erreichten ohne Grenze über 1,2 GB. `limits.maxInFlightMegabytes` (Standard 40) begrenzt deshalb, was alle Worker zusammen gleichzeitig senden. Normale Mails erreichen die Grenze nicht; ein Item darüber läuft allein.
 - **Log:** Das Tageslog liegt immer in `logs` neben der EXE. `staging.logs` aus älteren Configs wird ignoriert.
 - **Staging-Aufräumen:** Nach bestätigtem Import wird die EML gelöscht; Arbeitsdateien für Anhänge schon beim Erzeugen der EML. Ist für ein Postfach nichts mehr offen, wird sein Staging-Ordner entfernt. Fehlgeschlagene Items behalten ihre EML für den nächsten Versuch.
 - **Mehrere Quellen auf ein Ziel:** erlaubt; `id` muss eindeutig sein. Eine Quelle darf nur einem aktiven Eintrag zugeordnet sein.

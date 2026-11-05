@@ -449,7 +449,8 @@ public sealed class MigrationRunner
         var transfer = new TransferOptions(
             config.Limits.Workers,
             config.Limits.BatchSize,
-            config.Limits.MaxBatchMegabytes * BytesPerMegabyte);
+            config.Limits.MaxBatchMegabytes * BytesPerMegabyte,
+            config.Limits.MaxInFlightMegabytes * BytesPerMegabyte);
 
         await using var output = outputFactory(mailbox);
         await output.OpenAsync(

@@ -160,6 +160,43 @@ public sealed class MigrationRunnerTests : IDisposable
     }
 
     [Fact]
+    public void In_flight_budget_sends_items_above_it_one_at_a_time()
+    {
+        var large = new string('x', 2 * 1024 * 1024);
+        for (var i = 0; i < 6; i++)
+        {
+            var number = i;
+            _in.Add("2", $"L{number}", $"gross-{number}", item => item.NativeExport = path =>
+            {
+                File.WriteAllText(path, $"Subject: gross-{number}\r\n\r\n{large}");
+                return true;
+            });
+        }
+
+        _output.SendDelay = TimeSpan.FromMilliseconds(200);
+        var config = Config(limits =>
+        {
+            limits.MaxBatchMegabytes = 1;
+            limits.MaxInFlightMegabytes = 1;
+        });
+
+        Assert.Equal(0, Run(config));
+
+        Assert.Equal(1, _output.MaxConcurrency);
+        Assert.Equal(6, _output.Items.Count);
+    }
+
+    [Fact]
+    public void In_flight_budget_must_be_positive()
+    {
+        var config = Config(limits => limits.MaxInFlightMegabytes = 0);
+
+        var failure = Assert.Throws<CliException>(() => config.Validate(requireM365: false));
+
+        Assert.Contains("maxInFlightMegabytes", failure.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Task_with_david_id_property_no_longer_breaks_the_run()
     {
         // Genau diese Stelle endete im echten Lauf mit dem FATAL zum Write-Lock.

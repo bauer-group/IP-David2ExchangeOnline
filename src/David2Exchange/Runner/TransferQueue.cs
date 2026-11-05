@@ -7,7 +7,7 @@ using David2Exchange.Source;
 
 namespace David2Exchange.Runner;
 
-public sealed record TransferOptions(int Workers, int BatchSize, long MaxBatchBytes);
+public sealed record TransferOptions(int Workers, int BatchSize, long MaxBatchBytes, long MaxInFlightBytes);
 
 public sealed record TransferResult(int Imported, int AlreadyPresent, int Failed, IReadOnlyList<string> RetryableKeys);
 
@@ -33,6 +33,7 @@ public sealed class TransferQueue : IDisposable
     private readonly string _progressLabel;
     private readonly Channel<List<ItemDocument>> _batches;
     private readonly CancellationTokenSource _cancellation;
+    private readonly ByteBudget _budget;
     private readonly List<string> _retryableKeys = new();
     private readonly object _resultGate = new();
 
@@ -58,6 +59,7 @@ public sealed class TransferQueue : IDisposable
         _options = options;
         _progressLabel = progressLabel;
         _cancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        _budget = new ByteBudget(options.MaxInFlightBytes);
         _batches = Channel.CreateBounded<List<ItemDocument>>(new BoundedChannelOptions(options.Workers)
         {
             FullMode = BoundedChannelFullMode.Wait,
@@ -127,6 +129,7 @@ public sealed class TransferQueue : IDisposable
     public void Dispose()
     {
         _cancellation.Dispose();
+        _budget.Dispose();
     }
 
     private void FlushPending()
@@ -173,6 +176,20 @@ public sealed class TransferQueue : IDisposable
     }
 
     private async Task ProcessBatchAsync(List<ItemDocument> batch)
+    {
+        // Vor dem Importing-Vermerk: Was hier noch wartet, hat den Server nachweislich nicht erreicht.
+        var reserved = await _budget.AcquireAsync(batch.Sum(StagedBytes), _cancellation.Token).ConfigureAwait(false);
+        try
+        {
+            await SendBatchAsync(batch).ConfigureAwait(false);
+        }
+        finally
+        {
+            _budget.Release(reserved);
+        }
+    }
+
+    private async Task SendBatchAsync(List<ItemDocument> batch)
     {
         var items = batch.Select(ToOutputItem).ToList();
 
