@@ -8,6 +8,7 @@
 | [UNPACK.md](UNPACK.md) | Archive für Fax und Voice entpacken | aktuell |
 | [RELEASE.md](RELEASE.md) | GitHub-Release, self-contained Single-File-EXE | aktuell |
 | [PROBE.md](PROBE.md) | DvApi-/EWS-Testlauf auf der David-Workstation | aktuell |
+| [TOOLS.md](TOOLS.md) | Postfach-Nacharbeit per Microsoft Graph: Mails vor Stichtag verschieben, Ordnerbaum als gelesen markieren | aktuell |
 | [SPECIFICATION.md](SPECIFICATION.md) | Ursprüngliche technische Spezifikation (v3) | Referenz, teilweise überholt |
 | [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md) | Architektur-/Projektplan (v2.3) | Referenz, Terminstand 31.10.2026 |
 

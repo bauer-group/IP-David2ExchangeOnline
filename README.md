@@ -293,6 +293,8 @@ Two paths are documented in [docs/SETUP.md](docs/SETUP.md):
 
 All commands run from the EXE; `--config` defaults to `migration.yaml` next to the EXE.
 
+For clean-up in Exchange after the import, `tools/` holds two standalone PowerShell scripts. They use Microsoft Graph with delegated sign-in and need neither the EXE nor its app registration: `Move-MessagesBeforeDate.ps1` moves everything before a cut-off date from one folder into another, `Mark-FolderTreeRead.ps1` marks a folder and all its subfolders as read. See [docs/TOOLS.md](docs/TOOLS.md).
+
 ## 9. Build, tests, release
 
 - Build: see section 1B or [docs/RELEASE.md](docs/RELEASE.md).
@@ -307,4 +309,5 @@ All commands run from the EXE; `--config` defaults to `migration.yaml` next to t
 - [Release and EXE](docs/RELEASE.md)
 - [Unpacking archives](docs/UNPACK.md)
 - [Probe on the David workstation](docs/PROBE.md)
+- [Mailbox clean-up scripts (Graph)](docs/TOOLS.md)
 - Background: [Specification](docs/SPECIFICATION.md) · [Implementation plan](docs/IMPLEMENTATION-PLAN.md)
