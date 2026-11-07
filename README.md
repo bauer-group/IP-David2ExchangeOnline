@@ -10,7 +10,7 @@ Tobit David → Exchange Online migration tool for Windows x86. The tool runs on
 
 Download the latest release from:
 
-**https://github.com/bauer-group/IP-David2Exchange/releases/latest**
+**https://github.com/bauer-group/IP-David2ExchangeOnline/releases/latest**
 
 Use the self-contained single-file executable:
 

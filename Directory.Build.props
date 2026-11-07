@@ -13,7 +13,7 @@
     <Version>1.3.0</Version>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <RepositoryUrl>https://github.com/bauer-group/IP-David2Exchange</RepositoryUrl>
+    <RepositoryUrl>https://github.com/bauer-group/IP-David2ExchangeOnline</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageProjectUrl>$(RepositoryUrl)</PackageProjectUrl>
   </PropertyGroup>
