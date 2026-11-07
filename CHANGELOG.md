@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [1.3.1](https://github.com/bauer-group/IP-David2ExchangeOnline/compare/v1.3.0...v1.3.1) (2026-11-07)
+
+### 🐛 Bug Fixes
+
+* **build:** pointed repository links to IP-David2ExchangeOnline ([6772970](https://github.com/bauer-group/IP-David2ExchangeOnline/commit/67729704fe3093d43dd4b40b744c2dcfc84ffc12))
+
 ## [1.3.0](https://github.com/bauer-group/IP-David2ExchangeOnline/compare/v1.2.3...v1.3.0) (2026-11-07)
 
 ### 🚀 Features
