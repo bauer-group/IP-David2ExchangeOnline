@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. This file is maintained
 automatically by semantic-release on every release to `main`.
 
+## [1.3.0](https://github.com/bauer-group/IP-David2Exchange/compare/v1.2.3...v1.3.0) (2026-11-07)
+
+### 🚀 Features
+
+* **tools:** added Graph scripts for mailbox clean-up ([d7d6e79](https://github.com/bauer-group/IP-David2Exchange/commit/d7d6e795349fea8906bc091c572a770b46dcc754))
+
 ## [1.2.3](https://github.com/bauer-group/IP-David2Exchange/compare/v1.2.2...v1.2.3) (2026-11-05)
 
 ### 🐛 Bug Fixes
